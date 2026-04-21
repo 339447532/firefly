@@ -1,0 +1,19 @@
+WS_TOKEN=D6E0311D-0880-4D8C-8884-xxxxxxxxxxxx
+PORT=8080
+# mac 环境
+TMUX_PATH=/opt/homebrew/bin/tmux
+#linux 环境
+#TMUX_PATH=/usr/bin/tmux
+TMUX_SESSION_PATH=/Users/zhanqi
+
+# 内网穿透 (lanproxy client) - 默认关闭，设置 PROXY_ENABLE=true 启用
+PROXY_ENABLE=true
+PROXY_CLIENT_KEY=xxxxxxxxxxxxxxxxxxx
+PROXY_SERVER_HOST=39.128.114.222
+# 内网穿透服务器端口, 默认 4993
+PROXY_SERVER_PORT=4993
+PROXY_SSL_ENABLE=true
+PROXY_SSL_CERT_PATH=conf/client-cert.pem
+PROXY_SSL_KEY_PATH=conf/client-key.pem
+PROXY_SSL_KEY_PASSWORD=changeit
+PROXY_LOG_LEVEL=INFO

@@ -1,0 +1,39 @@
+{
+  "name": "firefly-gateway",
+  "version": "1.0.0",
+  "bin": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build:bin": "pkg ."
+  },
+  "dependencies": {
+    "@xterm/addon-attach": "^0.12.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "dotenv": "^17.4.2",
+    "node-pty": "^1.2.0-beta.12",
+    "strip-ansi": "^6.0.1",
+    "uuid": "^9.0.0",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "pkg": "^5.8.1"
+  },
+  "pkg": {
+    "scripts": [
+      "server.js",
+      "lib/**/*.js"
+    ],
+    "assets": [
+      ".env",
+      "public/**/*",
+      "conf/**/*",
+      "node_modules/node-pty/build/Release/**/*",
+      "node_modules/node-pty/prebuilds/**/*"
+    ],
+    "outputPath": "dist",
+    "targets": [
+      "node18-macos-arm64"
+    ]
+  }
+}

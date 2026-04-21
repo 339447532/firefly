@@ -1,0 +1,52 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Server
+server/node_modules/
+server/uploads/
+server/dist/
+server/.env
+
+# Mobile (React Native)
+mobile/node_modules/
+mobile/build/
+mobile/.gradle/
+mobile/.kotlin/
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/app/release/
+mobile/android/local.properties
+mobile/android/.cxx/
+mobile/android/*.keystore
+!mobile/android/app/debug.keystore
+mobile/ios/build/
+mobile/ios/Pods/
+mobile/xcuserdata/
+mobile/*.xcuserstate
+mobile/*.ipa
+mobile/.metro-health-check*
+
+# Logs
+npm-debug.log*
+yarn-error.log
+
+# Proxy client (standalone - kept as reference)
+proxy-client/node_modules/
+
+# Claude Code
+.claude/
+
+# Coverage
+coverage/
+
+# Misc
+*.hprof
+*.jsbundle

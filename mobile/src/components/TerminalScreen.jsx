@@ -10,6 +10,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const DEFAULT_IP = '192.168.1.100:8080';
 const DEFAULT_TOKEN = 'D6E0311D-0880-4D8C-8884-3B1AD1F93491';
+const KEYBOARD_ASSET_VERSION = '20260421-traditional';
 const buildHttpBaseUrl = (ip) => `http://${ip}`;
 
 export default function TerminalScreen() {
@@ -35,7 +36,7 @@ export default function TerminalScreen() {
   const httpBaseUrl = buildHttpBaseUrl(serverIp);
   const terminalUrl = `${httpBaseUrl}/terminal?fontSize=${fontSize}&token=${encodeURIComponent(token)}`;
   const imeBottomInset = Math.max(insets.bottom, 16);
-  const imeKeyboardUrl = `${httpBaseUrl}/keyboard?embedded=1&bottomInset=${imeBottomInset}&token=${encodeURIComponent(token)}`;
+  const imeKeyboardUrl = `${httpBaseUrl}/keyboard?embedded=1&bottomInset=${imeBottomInset}&kbv=${KEYBOARD_ASSET_VERSION}&token=${encodeURIComponent(token)}`;
   const [tempIp, setTempIp] = useState(DEFAULT_IP);
   const [tempToken, setTempToken] = useState(DEFAULT_TOKEN);
   const [tempFontSize, setTempFontSize] = useState('12');
@@ -1427,6 +1428,8 @@ const styles = StyleSheet.create({
   imeKeyboardDock: {
     height: 376,
     minHeight: 340,
+    width: '100%',
+    alignSelf: 'stretch',
     backgroundColor: '#1a1a1a',
     borderTopWidth: 1,
     borderTopColor: '#323232',
@@ -1660,6 +1663,8 @@ const styles = StyleSheet.create({
   },
   imeKeyboardWebview: {
     flex: 1,
+    width: '100%',
+    alignSelf: 'stretch',
     backgroundColor: '#1f1f1f',
   },
   keyboardHeader: {

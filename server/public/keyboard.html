@@ -21,6 +21,8 @@
       html,
       body {
         width: 100%;
+        min-width: 100vw;
+        max-width: 100vw;
         height: 100%;
         margin: 0;
         overflow: hidden;
@@ -41,7 +43,30 @@
 
       #root {
         width: 100%;
+        min-width: 100vw;
+        max-width: 100vw;
         height: 100%;
+        overflow: hidden;
+      }
+
+      .firefly-keyboard-page {
+        width: 100vw;
+        min-width: 100vw;
+        max-width: 100vw;
+        overflow: hidden;
+      }
+
+      .firefly-keyboard-page .zhk {
+        width: 100vw !important;
+        min-width: 100vw !important;
+        max-width: 100vw !important;
+        margin: 0 !important;
+        align-self: stretch;
+      }
+
+      .firefly-keyboard-page--embedded .zhk {
+        border-radius: 16px 16px 0 0;
+        box-shadow: none;
       }
 
       #keyboard-boot {
@@ -95,6 +120,6 @@
     <script src="/vendor/react.production.min.js"></script>
     <script src="/vendor/react-dom.production.min.js"></script>
     <script src="/vendor/zh-keyboard-react.umd.cjs"></script>
-    <script src="/assets/keyboard-client.js"></script>
+    <script src="/assets/keyboard-client.js?v=20260421-traditional"></script>
   </body>
 </html>

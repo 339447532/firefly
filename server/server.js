@@ -74,6 +74,8 @@ const TMP_DIR = path.join(RUNTIME_DIR, 'uploads');
 const PUBLIC_DIR = path.join(SOURCE_DIR, 'public');
 const TERMINAL_PAGE = path.join(PUBLIC_DIR, 'index.html');
 const TERMINAL_CLIENT_SCRIPT = path.join(PUBLIC_DIR, 'terminal-client.js');
+const KEYBOARD_PAGE = path.join(PUBLIC_DIR, 'keyboard.html');
+const KEYBOARD_CLIENT_SCRIPT = path.join(PUBLIC_DIR, 'keyboard-client.js');
 
 let currentTmuxSession = DEFAULT_TMUX_SESSION;
 let proxyClient = null;
@@ -81,12 +83,20 @@ let proxyClient = null;
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
+  '.mjs': 'application/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8'
+  '.json': 'application/json; charset=utf-8',
+  '.wasm': 'application/wasm',
+  '.yaml': 'text/yaml; charset=utf-8'
 };
 
 const STATIC_FILES = new Map([
-  ['/assets/terminal-client.js', TERMINAL_CLIENT_SCRIPT]
+  ['/assets/terminal-client.js', TERMINAL_CLIENT_SCRIPT],
+  ['/assets/keyboard-client.js', KEYBOARD_CLIENT_SCRIPT],
+  ['/vendor/react.production.min.js', path.join(PUBLIC_DIR, 'vendor', 'react.production.min.js')],
+  ['/vendor/react-dom.production.min.js', path.join(PUBLIC_DIR, 'vendor', 'react-dom.production.min.js')],
+  ['/vendor/zh-keyboard-react.umd.cjs', path.join(PUBLIC_DIR, 'vendor', 'zh-keyboard-react.umd.cjs')],
+  ['/vendor/zh-keyboard-react.css', path.join(PUBLIC_DIR, 'vendor', 'zh-keyboard-react.css')]
 ]);
 
 const CLAUDE_ACTION_MAP = {
@@ -127,6 +137,28 @@ function writeText(res, statusCode, text) {
   res.end(text);
 }
 
+function getCacheControl(filePath) {
+  const relativePath = path.relative(PUBLIC_DIR, filePath).replace(/\\/g, '/');
+
+  if (
+    relativePath.startsWith('vendor/') ||
+    relativePath.startsWith('assets/') ||
+    relativePath.startsWith('pinyin-data/')
+  ) {
+    return 'public, max-age=31536000, immutable';
+  }
+
+  if (relativePath === 'keyboard.html') {
+    return 'public, max-age=3600';
+  }
+
+  if (relativePath === 'index.html') {
+    return 'public, max-age=300';
+  }
+
+  return 'public, max-age=3600';
+}
+
 function serveFile(res, filePath) {
   const ext = path.extname(filePath);
   const stream = createReadStream(filePath);
@@ -135,8 +167,22 @@ function serveFile(res, filePath) {
     writeText(res, 404, 'Not Found');
   });
 
-  res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
+  res.writeHead(200, {
+    'Content-Type': MIME[ext] || 'application/octet-stream',
+    'Cache-Control': getCacheControl(filePath)
+  });
   stream.pipe(res);
+}
+
+function resolvePublicAsset(pathname) {
+  const normalizedPath = path.normalize(pathname).replace(/^(\.\.(\/|\\|$))+/, '');
+  const assetPath = path.join(PUBLIC_DIR, normalizedPath);
+
+  if (!assetPath.startsWith(PUBLIC_DIR) || !existsSync(assetPath)) {
+    return null;
+  }
+
+  return assetPath;
 }
 
 async function runTmux(args) {
@@ -369,13 +415,13 @@ const httpServer = createServer((req, res) => {
     return;
   }
 
-  if (pathname === '/' || pathname === '/terminal') {
+  if (pathname === '/' || pathname === '/terminal' || pathname === '/keyboard') {
     if (reqToken !== AUTH_TOKEN) {
       writeText(res, 401, 'Unauthorized');
       return;
     }
 
-    serveFile(res, TERMINAL_PAGE);
+    serveFile(res, pathname === '/keyboard' ? KEYBOARD_PAGE : TERMINAL_PAGE);
     return;
   }
 
@@ -383,6 +429,14 @@ const httpServer = createServer((req, res) => {
   if (staticFile) {
     serveFile(res, staticFile);
     return;
+  }
+
+  if (pathname.startsWith('/vendor/')) {
+    const assetPath = resolvePublicAsset(pathname.slice(1));
+    if (assetPath) {
+      serveFile(res, assetPath);
+      return;
+    }
   }
 
   if (pathname === '/favicon.ico') {

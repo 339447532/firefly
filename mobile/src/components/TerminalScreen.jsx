@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
-import { View, StyleSheet, TouchableOpacity, Text, Alert, StatusBar, Modal, TextInput, FlatList, ScrollView, KeyboardAvoidingView, Platform } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { View, StyleSheet, TouchableOpacity, Text, Alert, StatusBar, Modal, TextInput, FlatList, ScrollView, KeyboardAvoidingView, Platform, InteractionManager } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import { keepLocalCopy, pick, types } from '@react-native-documents/picker';
 import { launchImageLibrary } from 'react-native-image-picker';
@@ -10,9 +10,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const DEFAULT_IP = '192.168.1.100:8080';
 const DEFAULT_TOKEN = 'D6E0311D-0880-4D8C-8884-3B1AD1F93491';
-const buildWsUrl = (ip, token) => `ws://${ip}?token=${token}`;
+const buildHttpBaseUrl = (ip) => `http://${ip}`;
 
 export default function TerminalScreen() {
+  const insets = useSafeAreaInsets();
   const webview = useRef(null);
   const deleteRepeatTimeoutRef = useRef(null);
   const deleteRepeatIntervalRef = useRef(null);
@@ -27,16 +28,23 @@ export default function TerminalScreen() {
   const [selectedModifiers, setSelectedModifiers] = useState([]);
   const [serverIp, setServerIp] = useState(DEFAULT_IP);
   const [token, setToken] = useState(DEFAULT_TOKEN);
-  const wsUrl = buildWsUrl(serverIp, token);
+  const [fontSize, setFontSize] = useState(12);
+  const [imeModeEnabled, setImeModeEnabled] = useState(false);
+  const [showImeKeyboard, setShowImeKeyboard] = useState(false);
+  const [imeKeyboardInitialized, setImeKeyboardInitialized] = useState(false);
+  const httpBaseUrl = buildHttpBaseUrl(serverIp);
+  const terminalUrl = `${httpBaseUrl}/terminal?fontSize=${fontSize}&token=${encodeURIComponent(token)}`;
+  const imeBottomInset = Math.max(insets.bottom, 16);
+  const imeKeyboardUrl = `${httpBaseUrl}/keyboard?embedded=1&bottomInset=${imeBottomInset}&token=${encodeURIComponent(token)}`;
   const [tempIp, setTempIp] = useState(DEFAULT_IP);
   const [tempToken, setTempToken] = useState(DEFAULT_TOKEN);
-  const [fontSize, setFontSize] = useState(12);
   const [tempFontSize, setTempFontSize] = useState('12');
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [editingCommand, setEditingCommand] = useState({ id: '', name: '', command: '' });
   const [currentPath, setCurrentPath] = useState('');
   const [directoryItems, setDirectoryItems] = useState([]);
   const [connectionError, setConnectionError] = useState(false);
+  const [terminalLoaded, setTerminalLoaded] = useState(false);
   const [customCommands, setCustomCommands] = useState([
     { id: '1', name: 'claude root', command: 'claude --dangerously-skip-permissions' },
     { id: '2', name: 'list files', command: 'ls -la' },
@@ -286,6 +294,7 @@ export default function TerminalScreen() {
     setServerIp(tempIp);
     setToken(tempToken);
     setFontSize(newSize);
+    setConnectionError(false);
     AsyncStorage.multiSet([['serverIp', tempIp], ['token', tempToken], ['fontSize', String(newSize)]]);
     setShowConfigModal(false);
     if (ipChanged) {
@@ -366,6 +375,87 @@ export default function TerminalScreen() {
     }, 300);
   }, [sendToTerminal]);
 
+  const refreshTerminalLayout = useCallback(() => {
+    webview.current?.injectJavaScript(`
+      if (typeof window.dispatchEvent === 'function') {
+        window.dispatchEvent(new Event('resize'));
+      }
+      true;
+    `);
+  }, []);
+
+  const toggleImeKeyboard = useCallback(() => {
+    setImeModeEnabled(prev => {
+      const nextValue = !prev;
+
+      if (!nextValue) {
+        setShowImeKeyboard(false);
+      }
+
+      return nextValue;
+    });
+  }, []);
+
+  const handleImeKeyboardMessage = useCallback((event) => {
+    try {
+      const data = JSON.parse(event.nativeEvent.data);
+
+      if (data.type === 'keyboard_close') {
+        setShowImeKeyboard(false);
+        return;
+      }
+
+      if (data.type === 'keyboard_input' && typeof data.text === 'string' && data.text) {
+        sendToTerminal({ type: 'input', data: data.text });
+      }
+    } catch (_error) {
+      // Ignore non-JSON bridge messages from the keyboard panel.
+    }
+  }, [sendToTerminal]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      refreshTerminalLayout();
+    }, 60);
+
+    return () => clearTimeout(timer);
+  }, [refreshTerminalLayout, showExtraKeys, showImeKeyboard]);
+
+  useEffect(() => {
+    if (showImeKeyboard || imeModeEnabled) {
+      setImeKeyboardInitialized(true);
+    }
+  }, [imeModeEnabled, showImeKeyboard]);
+
+  useEffect(() => {
+    if (!terminalLoaded) {
+      return;
+    }
+
+    webview.current?.injectJavaScript(`
+      if (typeof window.fireflySetImeMode === 'function') {
+        window.fireflySetImeMode(${imeModeEnabled ? 'true' : 'false'});
+      }
+      true;
+    `);
+  }, [imeModeEnabled, terminalLoaded]);
+
+  useEffect(() => {
+    if (!settingsLoaded || connectionError || terminalLoaded === false || imeKeyboardInitialized) {
+      return undefined;
+    }
+
+    const task = InteractionManager.runAfterInteractions(() => {
+      setTimeout(() => {
+        setImeKeyboardInitialized(true);
+      }, 400);
+    });
+
+    return () => {
+      task.cancel();
+    };
+  }, [connectionError, imeKeyboardInitialized, settingsLoaded, terminalLoaded]);
+
   const deleteCommand = useCallback((id) => {
     Alert.alert(
       '删除命令',
@@ -383,7 +473,7 @@ export default function TerminalScreen() {
         }
       ]
     );
-  }, []);
+  }, [customCommands]);
 
   const editCommand = useCallback((cmd) => {
     setEditingCommand(cmd);
@@ -491,11 +581,17 @@ export default function TerminalScreen() {
           setCurrentPath(data.path);
           setDirectoryItems(data.items || []);
         }
+      } else if (data.type === 'request_ime_keyboard' && imeModeEnabled) {
+        setShowImeKeyboard(true);
       }
     } catch (e) {
       // Ignore non-JSON messages
     }
-  }, []);
+  }, [imeModeEnabled]);
+
+  const renderTerminalFallback = useCallback(() => (
+    <View style={styles.webviewFallback} />
+  ), []);
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
@@ -545,133 +641,191 @@ export default function TerminalScreen() {
           </View>
         </View>
 
-        {/* Connection Error Hint */}
         {settingsLoaded && connectionError && (
-          <TouchableOpacity style={styles.errorHint} onPress={handleOpenConfig}>
-            <Text style={styles.errorHintText}>网络连接失败</Text>
-            <Text style={styles.errorHintSubtext}>点击此处配置服务器IP</Text>
+          <TouchableOpacity style={styles.connectionConfigHint} onPress={handleOpenConfig}>
+            <Text style={styles.connectionConfigHintText}>点击此处配置服务器IP</Text>
           </TouchableOpacity>
         )}
 
         <View style={styles.mainContent}>
-          {settingsLoaded && <WebView
-            ref={webview}
-            source={{ uri: `${wsUrl.replace('ws://', 'http://').split('?')[0]}/terminal?fontSize=${fontSize}&token=${wsUrl.split('token=')[1] || ''}` }}
-            style={[styles.terminal, connectionError && styles.terminalHidden]}
-            onMessage={handleMessage}
-            javaScriptEnabled
-            originWhitelist={['*']}
-            mixedContentMode="always"
-            domStorageEnabled
-            allowFileAccess
-            allowFileAccessFromFileURLs
-            allowUniversalAccessFromFileURLs
-            scalesPageToFit={false}
-            onError={() => setConnectionError(true)}
-            onLoadStart={() => setConnectionError(false)}
-          />}
-
-          {settingsLoaded && connectionError && (
-            <TouchableOpacity style={styles.terminalErrorOverlay} onPress={handleOpenConfig} activeOpacity={0.9}>
-              <Text style={styles.terminalErrorTitle}>无法连接到终端</Text>
-              <Text style={styles.terminalErrorText}>请检查服务器地址、Token 和网络状态</Text>
-              <Text style={styles.terminalErrorAction}>点击打开配置</Text>
-            </TouchableOpacity>
+          {settingsLoaded && !connectionError && (
+            <WebView
+              ref={webview}
+              source={{ uri: terminalUrl }}
+              style={styles.terminal}
+              onMessage={handleMessage}
+              javaScriptEnabled
+              originWhitelist={['*']}
+              mixedContentMode="always"
+              domStorageEnabled
+              allowFileAccess
+              allowFileAccessFromFileURLs
+              allowUniversalAccessFromFileURLs
+              cacheEnabled
+              scalesPageToFit={false}
+              startInLoadingState
+              renderLoading={renderTerminalFallback}
+              onError={() => setConnectionError(true)}
+              onHttpError={() => setConnectionError(true)}
+              onLoadStart={() => {
+                setConnectionError(false);
+                setTerminalLoaded(false);
+              }}
+              onLoad={() => {
+                setConnectionError(false);
+                setTerminalLoaded(true);
+              }}
+            />
           )}
-
+          {settingsLoaded && connectionError && <View style={styles.terminalPlaceholder} />}
         </View>
 
-        {/* Extra Keys Row */}
-        {showExtraKeys && (
-          <View style={styles.extraKeys}>
-            <View style={styles.extraKeysRow}>
-              <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('esc')}>
-                <Text style={styles.keyText} numberOfLines={1}>ESC</Text>
+        {!showImeKeyboard && (
+          <>
+            {/* Extra Keys Row */}
+            {showExtraKeys && (
+              <View style={styles.extraKeys}>
+                <View style={styles.extraKeysRow}>
+                  <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('esc')}>
+                    <Text style={styles.keyText} numberOfLines={1}>ESC</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('tab')}>
+                    <Text style={styles.keyText} numberOfLines={1}>TAB</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('ctrl_c')}>
+                    <Text style={styles.keyText} numberOfLines={1}>^C</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('up')}>
+                    <Text style={styles.keyText} numberOfLines={1}>↑</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('down')}>
+                    <Text style={styles.keyText} numberOfLines={1}>↓</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('left')}>
+                    <Text style={styles.keyText} numberOfLines={1}>←</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('right')}>
+                    <Text style={styles.keyText} numberOfLines={1}>→</Text>
+                  </TouchableOpacity>
+                </View>
+                <View style={styles.extraKeysRow}>
+                  <TouchableOpacity style={styles.keyBtn} onPress={() => setShowKeyboardModal(true)}>
+                    <Text style={styles.keyText} numberOfLines={1}>组合键</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.keyBtn,
+                      styles.keyboardToggleBtn,
+                      imeModeEnabled && styles.keyboardToggleBtnActive,
+                    ]}
+                    onPress={toggleImeKeyboard}
+                  >
+                    <Text
+                      style={[
+                        styles.keyText,
+                        imeModeEnabled && styles.keyboardToggleBtnTextActive,
+                      ]}
+                      numberOfLines={1}
+                    >
+                      键盘
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.keyBtn} onPress={() => sendToTerminal({ type: 'input', data: '/' })}>
+                    <Text style={styles.keyText} numberOfLines={1}>/</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.keyBtn}
+                    onPress={handleDeletePress}
+                    onPressIn={handleDeletePressIn}
+                    onPressOut={handleDeletePressOut}
+                  >
+                    <Text style={styles.keyText} numberOfLines={1}>删除</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.keyBtn, styles.spaceKeyBtn]}
+                    onPress={() => sendToTerminal({ type: 'input', data: ' ' })}
+                  >
+                    <Text style={styles.keyText} numberOfLines={1}>空格</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+
+            {/* Main Toolbar */}
+            <View style={[styles.toolbar, { paddingBottom: Math.max(insets.bottom, 10) + 6 }]}>
+              <TouchableOpacity style={styles.toolbarBtn} onPress={pickFile}>
+                <Svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                  <Path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" stroke="#aaa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </Svg>
+                <Text style={styles.toolbarLabel}>文件</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('tab')}>
-                <Text style={styles.keyText} numberOfLines={1}>TAB</Text>
+              <TouchableOpacity style={styles.toolbarBtn} onPress={() => sendKey('ctrl_c')}>
+                <Svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                  <Rect x="6" y="6" width="12" height="12" rx="1" stroke="#aaa" strokeWidth="2" fill="#aaa"/>
+                </Svg>
+                <Text style={styles.toolbarLabel}>中断</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('ctrl_c')}>
-                <Text style={styles.keyText} numberOfLines={1}>^C</Text>
+              <TouchableOpacity style={styles.toolbarBtn} onPress={() => setShowCommandModal(true)}>
+                <Svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                  <Path d="M4 17l6-6-6-6M12 19h8" stroke="#aaa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </Svg>
+                <Text style={styles.toolbarLabel}>命令</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('up')}>
-                <Text style={styles.keyText} numberOfLines={1}>↑</Text>
+              <TouchableOpacity style={styles.toolbarBtn} onPress={scrollPageUp}>
+                <Svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                  <Path d="M18 15l-6-6-6 6" stroke="#aaa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </Svg>
+                <Text style={styles.toolbarLabel}>上翻</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('down')}>
-                <Text style={styles.keyText} numberOfLines={1}>↓</Text>
+              <TouchableOpacity style={styles.toolbarBtn} onPress={scrollPageDown}>
+                <Svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                  <Path d="M6 9l6 6 6-6" stroke="#aaa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </Svg>
+                <Text style={styles.toolbarLabel}>下翻</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('left')}>
-                <Text style={styles.keyText} numberOfLines={1}>←</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('right')}>
-                <Text style={styles.keyText} numberOfLines={1}>→</Text>
+              <TouchableOpacity style={styles.toolbarBtn} onPress={() => sendKey('enter')}>
+                <Svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                  <Path d="M9 10v5h5M9 15l5-5" stroke="#aaa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  <Path d="M20 4v7a4 4 0 01-4 4H9" stroke="#aaa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </Svg>
+                <Text style={styles.toolbarLabel}>回车</Text>
               </TouchableOpacity>
             </View>
-            <View style={styles.extraKeysRow}>
-              <TouchableOpacity style={styles.keyBtn} onPress={() => setShowKeyboardModal(true)}>
-                <Text style={styles.keyText} numberOfLines={1}>组合键</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.keyBtn} onPress={() => sendToTerminal({ type: 'input', data: '/' })}>
-                <Text style={styles.keyText} numberOfLines={1}>/</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.keyBtn}
-                onPress={handleDeletePress}
-                onPressIn={handleDeletePressIn}
-                onPressOut={handleDeletePressOut}
-              >
-                <Text style={styles.keyText} numberOfLines={1}>删除</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.keyBtn, styles.spaceKeyBtn]}
-                onPress={() => sendToTerminal({ type: 'input', data: ' ' })}
-              >
-                <Text style={styles.keyText} numberOfLines={1}>空格</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
+          </>
         )}
 
-        {/* Main Toolbar */}
-        <View style={styles.toolbar}>
-          <TouchableOpacity style={styles.toolbarBtn} onPress={pickFile}>
-            <Svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-              <Path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" stroke="#aaa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </Svg>
-            <Text style={styles.toolbarLabel}>文件</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.toolbarBtn} onPress={() => sendKey('ctrl_c')}>
-            <Svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-              <Rect x="6" y="6" width="12" height="12" rx="1" stroke="#aaa" strokeWidth="2" fill="#aaa"/>
-            </Svg>
-            <Text style={styles.toolbarLabel}>中断</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.toolbarBtn} onPress={() => setShowCommandModal(true)}>
-            <Svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-              <Path d="M4 17l6-6-6-6M12 19h8" stroke="#aaa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </Svg>
-            <Text style={styles.toolbarLabel}>命令</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.toolbarBtn} onPress={scrollPageUp}>
-            <Svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-              <Path d="M18 15l-6-6-6 6" stroke="#aaa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </Svg>
-            <Text style={styles.toolbarLabel}>上翻</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.toolbarBtn} onPress={scrollPageDown}>
-            <Svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-              <Path d="M6 9l6 6 6-6" stroke="#aaa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </Svg>
-            <Text style={styles.toolbarLabel}>下翻</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.toolbarBtn} onPress={() => sendKey('enter')}>
-            <Svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-              <Path d="M9 10v5h5M9 15l5-5" stroke="#aaa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-              <Path d="M20 4v7a4 4 0 01-4 4H9" stroke="#aaa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </Svg>
-            <Text style={styles.toolbarLabel}>回车</Text>
-          </TouchableOpacity>
-        </View>
+        {imeKeyboardInitialized && (
+          <View
+            pointerEvents={showImeKeyboard ? 'auto' : 'none'}
+            style={[
+              styles.imeKeyboardDock,
+              !showImeKeyboard && styles.imeKeyboardDockHidden,
+              showImeKeyboard && {
+                height: 376 + imeBottomInset,
+                minHeight: 340 + imeBottomInset,
+              },
+            ]}
+          >
+            <WebView
+              source={{ uri: imeKeyboardUrl }}
+              style={styles.imeKeyboardWebview}
+              onMessage={handleImeKeyboardMessage}
+              javaScriptEnabled
+              domStorageEnabled
+              mixedContentMode="always"
+              cacheEnabled
+              cacheMode="LOAD_CACHE_ELSE_NETWORK"
+              startInLoadingState
+              renderLoading={renderTerminalFallback}
+              onError={() => {
+                setShowImeKeyboard(false);
+                setTimeout(() => {
+                  Alert.alert('错误', '中文键盘加载失败，请检查服务端是否已重启');
+                }, 100);
+              }}
+            />
+          </View>
+        )}
       </KeyboardAvoidingView>
 
       {/* Custom Commands Modal */}
@@ -948,7 +1102,7 @@ export default function TerminalScreen() {
                     </TouchableOpacity>
                   ))}
                 </View>
-                <Text style={[styles.sectionTitle, { marginTop: 8 }]}>符号键</Text>
+                <Text style={[styles.sectionTitle, styles.sectionTitleSpaced]}>符号键</Text>
                 <View style={styles.symbolRow}>
                   {['`', '-', '=', '[', ']', '\\', ';', "'", ',', '.', '/', '~', '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '{', '}', '|', ':', '"', '<', '>', '?'].map(char => (
                     <TouchableOpacity
@@ -1135,7 +1289,7 @@ const styles = StyleSheet.create({
     flex: 1,
     position: 'relative',
   },
-  errorHint: {
+  connectionConfigHint: {
     backgroundColor: '#171717',
     paddingVertical: 12,
     paddingHorizontal: 16,
@@ -1143,15 +1297,9 @@ const styles = StyleSheet.create({
     borderBottomColor: '#2b2b2b',
     alignItems: 'center',
   },
-  errorHintText: {
-    color: '#f2f2f2',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  errorHintSubtext: {
+  connectionConfigHintText: {
     color: '#9a9a9a',
     fontSize: 12,
-    marginTop: 4,
   },
   statusBar: {
     flexDirection: 'row',
@@ -1184,7 +1332,7 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   statusConnected: {
-    backgroundColor: '#f2f2f2',
+    backgroundColor: '#34c759',
   },
   statusDisconnected: {
     backgroundColor: '#6f6f6f',
@@ -1196,37 +1344,17 @@ const styles = StyleSheet.create({
   terminal: {
     flex: 1,
     marginBottom: 10,
-  },
-  terminalHidden: {
-    opacity: 0,
-  },
-  terminalErrorOverlay: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
     backgroundColor: '#1e1e1e',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 28,
   },
-  terminalErrorTitle: {
-    color: '#f2f2f2',
-    fontSize: 18,
-    fontWeight: '600',
+  webviewFallback: {
+    flex: 1,
     marginBottom: 10,
+    backgroundColor: '#1e1e1e',
   },
-  terminalErrorText: {
-    color: '#a8a8a8',
-    fontSize: 14,
-    textAlign: 'center',
-    lineHeight: 22,
-  },
-  terminalErrorAction: {
-    color: '#d8d8d8',
-    fontSize: 13,
-    marginTop: 14,
+  terminalPlaceholder: {
+    flex: 1,
+    marginBottom: 10,
+    backgroundColor: '#1e1e1e',
   },
   extraKeys: {
     gap: 8,
@@ -1252,6 +1380,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
+  },
+  keyboardToggleBtn: {
+    minWidth: 54,
+  },
+  keyboardToggleBtnActive: {
+    backgroundColor: '#157347',
+    borderWidth: 1,
+    borderColor: '#2fb36f',
+  },
+  keyboardToggleBtnTextActive: {
+    color: '#e9fff0',
   },
   spaceKeyBtn: {
     minWidth: 88,
@@ -1284,6 +1423,25 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '500',
     marginTop: 4,
+  },
+  imeKeyboardDock: {
+    height: 376,
+    minHeight: 340,
+    backgroundColor: '#1a1a1a',
+    borderTopWidth: 1,
+    borderTopColor: '#323232',
+    overflow: 'hidden',
+  },
+  imeKeyboardDockHidden: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 1,
+    minHeight: 1,
+    opacity: 0,
+    overflow: 'hidden',
+    zIndex: -1,
   },
   modalOverlay: {
     flex: 1,
@@ -1500,6 +1658,10 @@ const styles = StyleSheet.create({
     maxHeight: '90%',
     paddingBottom: 10,
   },
+  imeKeyboardWebview: {
+    flex: 1,
+    backgroundColor: '#1f1f1f',
+  },
   keyboardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1558,6 +1720,9 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     marginBottom: 6,
+  },
+  sectionTitleSpaced: {
+    marginTop: 8,
   },
   modifierRow: {
     flexDirection: 'row',

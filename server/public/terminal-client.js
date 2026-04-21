@@ -45,7 +45,96 @@
   window.term = term;
   window.terminalWS = null;
 
+  let imeModeEnabled = false;
   let reconnectAttempts = 0;
+  let lastImeRequestAt = 0;
+
+  const requestImeKeyboard = () => {
+    if (!imeModeEnabled) {
+      return;
+    }
+
+    const now = Date.now();
+    if (now - lastImeRequestAt < 200) {
+      return;
+    }
+
+    lastImeRequestAt = now;
+    postBridgeMessage({ type: "request_ime_keyboard" });
+  };
+
+  const configureHiddenTextarea = () => {
+    const textarea = term.textarea;
+    if (!textarea) {
+      return;
+    }
+
+    textarea.readOnly = imeModeEnabled;
+    if (imeModeEnabled) {
+      textarea.setAttribute("readonly", "readonly");
+      textarea.setAttribute("inputmode", "none");
+    } else {
+      textarea.removeAttribute("readonly");
+      textarea.setAttribute("inputmode", "text");
+    }
+    textarea.setAttribute("autocorrect", "off");
+    textarea.setAttribute("autocapitalize", "off");
+    textarea.setAttribute("autocomplete", "off");
+    textarea.setAttribute("spellcheck", "false");
+    textarea.style.caretColor = imeModeEnabled ? "transparent" : "";
+  };
+
+  const focusNativeKeyboard = () => {
+    const textarea = term.textarea;
+    if (!textarea) {
+      return;
+    }
+
+    configureHiddenTextarea();
+    requestAnimationFrame(() => {
+      textarea.focus();
+    });
+  };
+
+  const setImeMode = (enabled) => {
+    imeModeEnabled = Boolean(enabled);
+    configureHiddenTextarea();
+  };
+
+  window.fireflySetImeMode = setImeMode;
+
+  const bindImeTriggers = () => {
+    const textarea = term.textarea;
+    if (!textarea || textarea.dataset.fireflyImeBound === "true") {
+      return;
+    }
+
+    textarea.dataset.fireflyImeBound = "true";
+    configureHiddenTextarea();
+
+    ["touchend", "mouseup"].forEach((eventName) => {
+      const handleInteraction = () => {
+        if (imeModeEnabled) {
+          requestImeKeyboard();
+          return;
+        }
+
+        focusNativeKeyboard();
+      };
+
+      container.addEventListener(eventName, handleInteraction);
+      textarea.addEventListener(eventName, handleInteraction);
+    });
+
+    textarea.addEventListener("focus", () => {
+      if (imeModeEnabled) {
+        configureHiddenTextarea();
+        requestImeKeyboard();
+      }
+    });
+  };
+
+  bindImeTriggers();
 
   const sendResize = () => {
     if (window.terminalWS && window.terminalWS.readyState === WebSocket.OPEN) {
@@ -78,6 +167,7 @@
       postBridgeMessage({ type: "connected" });
       ws.send(JSON.stringify({ type: "recover_screen" }));
       requestAnimationFrame(() => {
+        configureHiddenTextarea();
         fitTerminal();
         term.focus();
       });
@@ -131,6 +221,7 @@
   });
 
   requestAnimationFrame(() => {
+    configureHiddenTextarea();
     fitTerminal();
     term.focus();
   });

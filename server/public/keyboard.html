@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <title>Firefly Keyboard</title>
+    <link rel="stylesheet" href="/vendor/zh-keyboard-react.css" />
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+
+      * {
+        box-sizing: border-box;
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: #1f1f1f;
+        color: #f5f5f5;
+        font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue",
+          sans-serif;
+      }
+
+      body {
+        padding: 0;
+      }
+
+      button,
+      input {
+        font: inherit;
+      }
+
+      #root {
+        width: 100%;
+        height: 100%;
+      }
+
+      #keyboard-boot {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #8d8d8d;
+        font-size: 14px;
+        letter-spacing: 0.02em;
+        background: #1f1f1f;
+      }
+
+      #keyboard-error {
+        position: fixed;
+        inset: 16px;
+        display: none;
+        padding: 14px;
+        border: 1px solid #6b2f2f;
+        border-radius: 12px;
+        background: rgba(58, 12, 12, 0.95);
+        color: #ffd7d7;
+        font-size: 14px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        overflow: auto;
+        z-index: 9999;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="keyboard-boot">中文键盘加载中...</div>
+    <div id="keyboard-error"></div>
+
+    <script>
+      window.process = window.process || { env: { NODE_ENV: "production" } };
+      window.__showKeyboardError = function(message) {
+        var bootEl = document.getElementById("keyboard-boot");
+        var errorEl = document.getElementById("keyboard-error");
+        if (bootEl) bootEl.style.display = "none";
+        if (!errorEl) return;
+        errorEl.style.display = "block";
+        errorEl.textContent = String(message);
+      };
+      window.addEventListener("error", function(event) {
+        window.__showKeyboardError(event.error && event.error.stack ? event.error.stack : event.message);
+      });
+    </script>
+    <script src="/vendor/react.production.min.js"></script>
+    <script src="/vendor/react-dom.production.min.js"></script>
+    <script src="/vendor/zh-keyboard-react.umd.cjs"></script>
+    <script src="/assets/keyboard-client.js"></script>
+  </body>
+</html>

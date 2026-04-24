@@ -1,43 +1,58 @@
 # Firefly
 
-远程终端控制方案 — 通过 WebSocket 在移动端实时操控服务器上的 tmux 终端会话。
+Firefly 是一个移动端远程终端控制方案：React Native App 通过 WebView 承载 xterm.js，连接 Node.js WebSocket 网关；网关使用 `node-pty` 附着到 `tmux`，让手机可以实时操控 Mac/服务器上的终端会话。
+
+项目同时集成了可选的 proxy https://github.com/339447532/qiproxy 客户端，可将本机内网服务暴露到公网代理服务器。
 
 ## 项目结构
 
-```
+```text
 firefly/
-├── server/          # Node.js WebSocket 网关 + 内网穿透客户端
-│   ├── server.js    # 主服务入口
-│   ├── .env         # 配置文件
+├── server/                 # Node.js WebSocket 网关 + lanproxy 客户端
+│   ├── server.js           # HTTP、WebSocket、PTY、tmux、代理集成入口
 │   ├── lib/
-│   │   ├── tmux-manager.js     # tmux 管理
-│   │   ├── tui-parser.js       # TUI 提示解析
-│   │   └── proxy-client/       # 内网穿透模块
-│   │       ├── proxy-client-container.js  # 主入口
-│   │       ├── config.js        # 环境变量配置
-│   │       ├── protocol.js      # 协议编解码
-│   │       ├── channelManager.js # 通道管理
-│   │       ├── sslContext.js    # SSL 上下文
-│   │       ├── logger.js        # 日志
-│   │       └── constants.js     # 常量
-│   ├── conf/        # SSL 证书文件
-│   └── public/      # 终端页面静态资源
-├── mobile/          # React Native 移动端 (Android/iOS)
-├── proxy-client/    # 独立 lanproxy 客户端（参考，已集成到 server）
-└── scripts/         # 辅助脚本
+│   │   ├── tmux-manager.js # tmux pane / 滚动 / session 管理
+│   │   ├── tui-parser.js   # TUI 提示解析
+│   │   └── proxy-client/   # 内网穿透客户端模块
+│   ├── public/             # 终端页、中文键盘页、前端脚本和 vendor 资源
+│   └── conf/               # SSL 证书文件
+├── mobile/                 # React Native App (Android / iOS)
+│   └── src/components/TerminalScreen.jsx # 主要移动端 UI 和 WebView 宿主
+├── proxy-client/           # 独立 lanproxy 客户端源码参考
+└── scripts/                # 辅助脚本
 ```
 
 ## 功能特性
 
-- **远程终端** — 移动端通过 WebSocket 实时操控服务器 tmux 会话
-- **多窗口管理** — tmux 窗格分割、切换、滚动
-- **文件上传** — 从移动端上传文件到服务器
-- **中文屏幕键盘** — 内置基于 WebView 的中文键盘，支持拼音输入并直接写入终端
-- **输入模式切换** — 底部“键盘”按钮可切换 Web 键盘模式；开启后点击终端唤出 Web 键盘，关闭后恢复系统输入法
-- **移动端安全区适配** — 底部键盘兼容 iPhone Home Indicator / 弧形底边，最后一排按键不会贴底
-- **智能提示** — 自动识别 Claude Code 等终端交互提示并提供快捷操作
-- **内网穿透** — 可选的 lanproxy 客户端，将内网服务暴露到公网
-- **SSL 加密** — 内网穿透支持 TLS 加密连接
+### 服务端
+
+- **WebSocket 终端网关**：将移动端输入输出转发到 `tmux attach` 后的 PTY。
+- **多控制台支持**：支持列出、新建、切换和彻底关闭多个 `tmux session`。
+- **tmux pane 管理**：支持 pane 列表、横/竖分屏、切换、关闭。
+- **tmux 滚动控制**：支持上翻、下翻、到顶部、到底部。
+- **屏幕恢复**：连接或重连后可通过 `recover_screen` 捕获当前 pane 内容，减少空白屏。
+- **文件上传**：接收移动端 base64 文件，写入服务端 `uploads/`，并把路径回填到终端。
+- **目录浏览 API**：支持获取当前工作目录和列出目录，供移动端文件浏览器使用。
+- **TUI 提示解析**：识别部分终端交互提示，并通过结构化消息回传移动端。
+- **健康检查**：`/health` 返回网关、当前 tmux、代理状态。
+- **会话列表 HTTP API**：`/api/tmux/sessions` 返回可切换控制台列表，移动端弹窗优先使用它，避免 WebSocket 未 ready 时列表为空。
+- **内网穿透**：可选启动 lanproxy 客户端，支持 SSL、断线重连、通道管理。
+- **pkg 打包**：服务端可打包为 macOS 独立可执行文件。
+
+### 移动端 App
+
+- **终端 WebView**：内嵌 xterm.js 页面，支持自动适配终端尺寸、断线重连、屏幕恢复。
+- **控制台切换器**：状态栏显示当前控制台，弹窗中可刷新列表、切换控制台、新建控制台。
+- **彻底关闭控制台**：控制台列表中可关闭指定 `tmux session`；关闭当前控制台时会自动切换到其它可用控制台，必要时创建替代会话。
+- **连接配置**：App 内可配置服务器地址、Token、终端字体大小，并持久化到本地。
+- **自定义命令**：支持保存、编辑、排序、删除和一键执行常用命令。
+- **文件上传**：Android 支持文档上传；iOS 支持文件和相册上传。
+- **文件浏览器**：可读取服务端当前目录、向上导航、选择路径并写入终端。
+- **快捷按键栏**：ESC、TAB、Ctrl-C、方向键、删除、空格、回车、上翻、下翻等常用操作。
+- **组合键面板**：支持 Ctrl / Shift / Alt / Cmd 组合键和常见字母、数字、符号输入。
+- **中文 Web 键盘**：内置拼音输入键盘，适合系统输入法在 WebView 终端中体验不佳的场景。
+- **输入模式切换**：底部 `键盘` 按钮可在系统输入法和 Web 中文键盘之间切换。
+- **安全区适配**：兼容 iPhone Home Indicator，底部键盘和工具栏不会贴底。
 
 ## 快速开始
 
@@ -49,12 +64,17 @@ npm install
 node server.js
 ```
 
-启动后输出：
+启动后默认监听：
 
+```text
+http://0.0.0.0:8080
+ws://0.0.0.0:8080
 ```
-✅ Node 网关已启动: ws://0.0.0.0:8080
-🔑 Token: D6E0311D-0880-4D8C-8884-3B1AD1F93491
-ℹ️ 内网穿透未启用 (设置 PROXY_ENABLE=true 启用)
+
+终端页面：
+
+```text
+http://127.0.0.1:8080/terminal?token=<WS_TOKEN>
 ```
 
 ### 移动端
@@ -63,67 +83,104 @@ node server.js
 cd mobile
 npm install
 
+# Metro
+npm run start
+
 # Android
 npm run android
 
-# iOS
+# iOS 模拟器
 npm run ios
 
-# 构建 APK
+# iOS 真机
+npm run ios:device
+
+# iOS 真机 Release
+npm run ios:release
+
+# 构建并安装 Android debug APK
 npm run build:android
 ```
 
-Node >= 22.11.0 要求。
+Node >= 22.11.0。
 
-## 移动端交互说明
+## 移动端使用说明
+
+### 连接配置
+
+首次启动后可在顶部状态栏点击 `配置`：
+
+- `服务器地址`：格式为 `IP:端口`，例如 `192.168.1.100:8080`
+- `密钥`：服务端 `WS_TOKEN`
+- `终端字体大小`：8 到 32
+
+保存后 App 会持久化配置；服务器地址或 Token 变化时会重新加载终端 WebView。
+
+### 控制台管理
+
+点击状态栏的当前控制台名称或 `控制台` 按钮打开控制台弹窗：
+
+- `刷新列表`：重新从服务端读取 tmux session 列表
+- 点击控制台条目：切换当前终端到该控制台
+- `新建控制台`：创建新的 tmux session 并自动切换过去
+- `关闭`：彻底关闭对应 tmux session
+
+说明：
+
+- 控制台列表来自 `GET /api/tmux/sessions`，同时保留 WebSocket 消息作为兜底。
+- App 会记住上次使用的控制台，下次连接后自动尝试切回。
+- 如果关闭的是当前控制台，服务端会先切换到另一个可用控制台；如果没有其它控制台，会创建一个替代 session，避免连接直接断开。
 
 ### 中文键盘 / 输入模式
 
-- 底部工具区的 `键盘` 按钮是一个**输入模式开关**，不是立即弹出键盘。
-- `键盘` 按钮未选中时：
-  - 点击终端输入区域，使用系统输入法
-  - 不会弹出 Web 中文键盘
-- `键盘` 按钮选中时：
-  - 按钮会高亮
-  - 点击终端输入区域，会唤出底部 Web 中文键盘
-  - Web 中文键盘输入的内容会实时发送到终端
-- 再次点击 `键盘` 按钮会退出 Web 键盘模式，并恢复默认系统输入法行为
+- 底部工具区的 `键盘` 是输入模式开关，不是立即弹出键盘。
+- 未开启时，点击终端输入区域会使用系统输入法。
+- 开启后，点击终端输入区域会唤出底部 Web 中文键盘。
+- Web 中文键盘输入内容会实时发送到终端。
+- 再次点击 `键盘` 会退出 Web 键盘模式，恢复系统输入法。
 
-### 键盘加载与缓存
+### 文件与路径
 
-- 中文键盘页面由服务端 `GET /keyboard?token=<WS_TOKEN>` 提供
-- 移动端会在终端稳定后预热键盘 WebView，减少首次打开等待
-- 键盘相关静态资源（`/assets/*`、`/vendor/*`、拼音数据）启用了缓存，后续打开会更快
+- `文件`：从手机选择文件上传到服务端，服务端会把临时文件路径写入终端。
+- `目录`：打开服务端目录浏览器，默认读取当前 pane 工作目录。
+- 文件浏览器中点击目录可进入，点击选择按钮会把该路径写入终端。
 
-## 配置说明
+### 常用命令与组合键
 
-所有配置通过 `server/.env` 环境变量设置。
+- `命令`：管理自定义命令，支持新增、编辑、删除、排序、执行。
+- `组合键`：选择 Ctrl / Shift / Alt / Cmd 后发送组合输入。
+- 快捷键栏提供 ESC、TAB、Ctrl-C、方向键、删除、空格等高频操作。
+
+## 服务端配置
+
+服务端通过 `server/.env` 或环境变量配置。
 
 ### 基础配置
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `PORT` | `8080` | WebSocket 服务端口 |
-| `WS_TOKEN` | `D6E0311D-...` | WebSocket 认证令牌 |
-| `TMUX_PATH` | `/opt/homebrew/bin/tmux` | tmux 二进制路径 |
-| `TMUX_SESSION_PATH` | `$HOME` | tmux 会话工作目录 |
-| `TMUX_SESSION` | `mobile-dev` | 默认 tmux 会话名 |
+| `PORT` | `8080` | HTTP / WebSocket 监听端口 |
+| `WS_TOKEN` | `D6E0311D-0880-4D8C-8884-3B1AD1F93491` | 页面和 WebSocket 鉴权 Token |
+| `TMUX_PATH` | `/opt/homebrew/bin/tmux` | tmux 可执行文件路径 |
+| `TMUX_SESSION_PATH` | `$HOME` | 新建 tmux session 的工作目录 |
+| `TMUX_SESSION` | `mobile-dev` | 默认 tmux session 名称 |
+| `SERVER_TMUX_SESSION` | `firefly-server` | 服务端自身运行在 tmux 中时的保留 session 名，列表中会过滤它 |
 
 ### 内网穿透配置
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `PROXY_ENABLE` | `false` | 是否启用内网穿透 |
-| `PROXY_CLIENT_KEY` | — | 客户端认证密钥（启用时必填） |
-| `PROXY_SERVER_HOST` | — | 代理服务器地址（启用时必填） |
+| `PROXY_CLIENT_KEY` | - | 客户端认证密钥，启用时必填 |
+| `PROXY_SERVER_HOST` | - | 代理服务器地址，启用时必填 |
 | `PROXY_SERVER_PORT` | `4900` | 代理服务器端口 |
-| `PROXY_SSL_ENABLE` | `false` | 是否启用 SSL 加密 |
+| `PROXY_SSL_ENABLE` | `false` | 是否启用 SSL |
 | `PROXY_SSL_CERT_PATH` | `conf/client-cert.pem` | SSL 证书路径 |
 | `PROXY_SSL_KEY_PATH` | `conf/client-key.pem` | SSL 私钥路径 |
 | `PROXY_SSL_KEY_PASSWORD` | `changeit` | SSL 私钥密码 |
 | `PROXY_LOG_LEVEL` | `INFO` | 日志级别：DEBUG / INFO / WARN / ERROR |
 
-**启用示例：**
+启用示例：
 
 ```env
 PROXY_ENABLE=true
@@ -133,77 +190,206 @@ PROXY_SERVER_PORT=4993
 PROXY_SSL_ENABLE=true
 ```
 
+## HTTP 接口
+
+| 路径 | 鉴权 | 说明 |
+|------|------|------|
+| `GET /terminal?token=<WS_TOKEN>` | 是 | xterm.js 终端页面 |
+| `GET /keyboard?token=<WS_TOKEN>` | 是 | 中文屏幕键盘页面 |
+| `GET /api/tmux/sessions?token=<WS_TOKEN>` | 是 | 返回可切换控制台列表 |
+| `GET /health` | 否 | 健康检查和代理状态 |
+| `GET /assets/terminal-client.js` | 否 | 终端页脚本 |
+| `GET /assets/keyboard-client.js` | 否 | 中文键盘脚本 |
+| `GET /vendor/*` | 否 | 静态 vendor 资源 |
+
+`/api/tmux/sessions` 返回示例：
+
+```json
+{
+  "ok": true,
+  "active": "mobile-dev",
+  "sessions": [
+    { "name": "mobile-dev", "windows": 1, "attached": 1 },
+    { "name": "mobile-1777010199071", "windows": 1, "attached": 0 }
+  ]
+}
+```
+
+`/health` 返回示例：
+
+```json
+{
+  "ok": true,
+  "tmuxSession": "mobile-dev",
+  "proxy": { "enabled": false }
+}
+```
+
+启用内网穿透后：
+
+```json
+{
+  "ok": true,
+  "tmuxSession": "mobile-dev",
+  "proxy": {
+    "enabled": true,
+    "connected": true,
+    "server": "39.108.124.205:4993",
+    "activeConnections": 0,
+    "poolSize": 0
+  }
+}
+```
+
 ## WebSocket 协议
 
-连接地址：`ws://<server-ip>:8080?token=<WS_TOKEN>`
+连接地址：
 
-协议支持两种消息类型：
+```text
+ws://<server-ip>:8080?token=<WS_TOKEN>
+```
 
-- **原始数据** — 终端输出，直接写入 xterm.js 渲染
-- **JSON 控制消息** — 根据 `type` 字段分发处理
+协议在同一个 WebSocket 中混合两类消息：
 
-支持的 `type`：
+- 原始字节 / 字符串：终端输入输出，直接写入 PTY 或 xterm.js。
+- JSON 控制消息：根据 `type` 和 `action` 做结构化控制。
+
+连接成功后服务端会发送：
+
+```json
+{ "type": "connected", "sessionId": "...", "tmux": "mobile-dev" }
+```
+
+### 支持的消息类型
 
 | type | 说明 |
 |------|------|
-| `input` | 终端输入 |
-| `resize` | 终端尺寸调整 |
-| `upload_file` | 文件上传 |
-| `claude_action` | Claude Code 快捷操作 |
-| `tui_action` | TUI 提示交互 |
-| `tmux_ctrl` | tmux 窗口控制 |
-| `tmux_scroll` | tmux 滚动 |
-| `get_cwd` | 获取当前工作目录 |
-| `list_directory` | 目录列表 |
-| `recover_screen` | 恢复终端屏幕 |
-| `new_session` | 创建新 tmux 会话 |
+| `input` | 写入终端输入 |
+| `resize` | 调整 PTY 尺寸 |
+| `upload_file` | 上传 base64 文件 |
+| `claude_action` | 发送预定义快捷键 |
+| `tui_action` | 响应 TUI 提示 |
+| `tmux_ctrl` | tmux pane / session 控制 |
+| `tmux_scroll` | tmux 滚动控制 |
+| `get_cwd` | 获取当前 pane 工作目录 |
+| `list_directory` | 列出目录内容 |
+| `recover_screen` | 捕获并恢复当前屏幕内容 |
+| `new_session` | 直接创建新 tmux session |
+| `list_sessions` | 直接列出 tmux sessions |
+| `switch_session` | 直接切换 tmux session |
+| `close_session` | 直接关闭 tmux session |
 | `ping` | 心跳检测 |
 
-## HTTP 页面
+### tmux_ctrl action
 
-除 WebSocket 外，服务端还提供给移动端 WebView 使用的页面：
+`tmux_ctrl` 支持：
 
-| 路径 | 说明 |
-|------|------|
-| `/terminal?token=<WS_TOKEN>` | xterm.js 终端页面 |
-| `/keyboard?token=<WS_TOKEN>` | 中文屏幕键盘页面 |
-| `/health` | 服务健康检查 |
+| action | 说明 |
+|--------|------|
+| `list` | 列出当前 session 的 panes |
+| `split` | 分屏，`dir` 为 `h` 或 `v` |
+| `switch` | 切换 pane |
+| `close` | 关闭 pane |
+| `new_session` | 新建并切换控制台 |
+| `list_sessions` | 列出控制台 |
+| `switch_session` | 切换控制台 |
+| `close_session` | 彻底关闭控制台 |
 
-## 健康检查
-
-访问 `/health` 获取服务状态：
-
-```bash
-curl http://localhost:8080/health
-```
-
-返回示例（未启用内网穿透）：
+示例：
 
 ```json
-{ "ok": true, "tmuxSession": "mobile-dev", "proxy": { "enabled": false } }
+{ "type": "tmux_ctrl", "action": "list_sessions" }
 ```
-
-返回示例（已启用内网穿透）：
 
 ```json
-{ "ok": true, "tmuxSession": "mobile-dev", "proxy": { "enabled": true, "connected": true, "server": "39.108.124.205:4993", "activeConnections": 0, "poolSize": 0 } }
+{ "type": "tmux_ctrl", "action": "new_session", "name": "mobile-work" }
 ```
+
+```json
+{ "type": "tmux_ctrl", "action": "switch_session", "session": "mobile-work" }
+```
+
+```json
+{ "type": "tmux_ctrl", "action": "close_session", "session": "mobile-work" }
+```
+
+### tmux_scroll action
+
+| action | 说明 |
+|--------|------|
+| `page_up` | 上翻一页 |
+| `page_down` | 下翻一页 |
+| `to_top` | 跳到历史顶部 |
+| `to_bottom` | 回到底部并退出 copy-mode |
+
+## xterm.js 和中文键盘资源
+
+- 终端页面：`server/public/index.html`
+- 终端脚本：`server/public/terminal-client.js`
+- 中文键盘页面：`server/public/keyboard.html`
+- 中文键盘脚本：`server/public/keyboard-client.js`
+- 拼音数据：`server/public/vendor/pinyin-data/`
+
+移动端 WebView 加载服务端页面；Android/iOS 工程中也保留了 xterm 相关资源，供平台打包和兼容使用。
 
 ## 打包部署
 
+服务端可通过 `pkg` 打包：
+
 ```bash
 cd server
-npm run build:bin    # 使用 pkg 打包为独立可执行文件
+npm run build:bin
 ```
 
-打包产物输出到 `server/dist/` 目录，可直接部署无需 Node.js 环境。
+产物输出到：
+
+```text
+server/dist/
+```
+
+打包配置会包含：
+
+- `.env`
+- `public/**/*`
+- `conf/**/*`
+- `lib/**/*.js`
+- `node-pty` 的 `spawn-helper` 和 prebuilds
 
 ## 内网穿透工作原理
 
-1. 客户端使用 `PROXY_CLIENT_KEY` 连接到代理服务器
-2. 服务器验证通过后，客户端等待连接指令
-3. 当外部用户请求访问时，服务器下发 `TYPE_CONNECT` 指令
-4. 客户端连接到内网目标服务（如 `192.168.1.99:80`）
-5. 建立双向数据通道，外部用户与内网服务之间的数据实时转发
+1. Firefly server 内置 proxy client，根据 `PROXY_CLIENT_KEY` 连接代理服务器。
+2. 代理服务器认证通过后，客户端等待 `TYPE_CONNECT` 指令。
+3. 外部用户访问公网代理端口时，代理服务器下发目标连接指令。
+4. 客户端连接本机或内网目标服务。
+5. Firefly 在代理连接和内网连接之间做双向数据转发。
 
-断线时采用指数退避重连策略：1s → 2s → 4s → 8s → 16s → 32s → 60s
+断线后采用指数退避重连：1s -> 2s -> 4s -> 8s -> 16s -> 32s -> 60s。
+
+## 常见问题
+
+### 控制台列表为空
+
+确认服务端已经更新并重启，且可以访问：
+
+```bash
+curl "http://127.0.0.1:8080/api/tmux/sessions?token=<WS_TOKEN>"
+```
+
+如果服务端运行在 tmux 中，默认会过滤名为 `firefly-server` 的保留 session，避免误切换或误关闭网关自身。
+
+### iOS 真机调试时 build.db locked
+
+通常是仍有上一次 `xcodebuild` 在运行。等待其结束，或确认没有并发构建后再执行：
+
+```bash
+cd mobile
+npm run start
+npx react-native run-ios --device "iPhone" --no-packager
+```
+
+### 手机无法连接服务端
+
+- 确认手机和服务端机器在同一网络，或已启用内网穿透。
+- 确认 App 配置中的 `服务器地址` 是手机可访问的 `IP:端口`。
+- 确认 `WS_TOKEN` 和 App 中的密钥一致。
+- 确认服务端端口已监听：`lsof -Pan -iTCP:8080 -sTCP:LISTEN`。

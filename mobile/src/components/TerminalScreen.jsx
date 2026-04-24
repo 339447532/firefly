@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
-import { View, StyleSheet, TouchableOpacity, Text, Alert, StatusBar, Modal, TextInput, FlatList, ScrollView, KeyboardAvoidingView, Platform, InteractionManager } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, Text, Alert, StatusBar, Modal, TextInput, FlatList, ScrollView, KeyboardAvoidingView, Platform, InteractionManager, useWindowDimensions } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import { keepLocalCopy, pick, types } from '@react-native-documents/picker';
@@ -15,6 +15,7 @@ const buildHttpBaseUrl = (ip) => `http://${ip}`;
 
 export default function TerminalScreen() {
   const insets = useSafeAreaInsets();
+  const windowDimensions = useWindowDimensions();
   const webview = useRef(null);
   const deleteRepeatTimeoutRef = useRef(null);
   const deleteRepeatIntervalRef = useRef(null);
@@ -26,6 +27,7 @@ export default function TerminalScreen() {
   const [showEditModal, setShowEditModal] = useState(false);
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [showKeyboardModal, setShowKeyboardModal] = useState(false);
+  const [showScreenLive, setShowScreenLive] = useState(false);
   const [showFileBrowser, setShowFileBrowser] = useState(false);
   const [showConsoleModal, setShowConsoleModal] = useState(false);
   const [selectedModifiers, setSelectedModifiers] = useState([]);
@@ -41,6 +43,7 @@ export default function TerminalScreen() {
   const [imeKeyboardInitialized, setImeKeyboardInitialized] = useState(false);
   const httpBaseUrl = buildHttpBaseUrl(serverIp);
   const terminalUrl = `${httpBaseUrl}/terminal?fontSize=${fontSize}&token=${encodeURIComponent(token)}`;
+  const screenLiveUrl = `${httpBaseUrl}/screen?token=${encodeURIComponent(token)}`;
   const imeBottomInset = Math.max(insets.bottom, 16);
   const imeKeyboardUrl = `${httpBaseUrl}/keyboard?embedded=1&bottomInset=${imeBottomInset}&kbv=${KEYBOARD_ASSET_VERSION}&token=${encodeURIComponent(token)}`;
   const [tempIp, setTempIp] = useState(DEFAULT_IP);
@@ -719,6 +722,18 @@ export default function TerminalScreen() {
     <View style={styles.webviewFallback} />
   ), []);
 
+  const screenLiveIsPortrait = windowDimensions.height > windowDimensions.width;
+  const screenLiveFrameStyle = screenLiveIsPortrait
+    ? {
+        width: windowDimensions.height,
+        height: windowDimensions.width,
+        transform: [{ rotate: '90deg' }],
+      }
+    : {
+        width: windowDimensions.width,
+        height: windowDimensions.height,
+      };
+
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <StatusBar barStyle="light-content" backgroundColor="#1e1e1e" />
@@ -861,6 +876,9 @@ export default function TerminalScreen() {
                       键盘
                     </Text>
                   </TouchableOpacity>
+                  <TouchableOpacity style={[styles.keyBtn, styles.screenLiveBtn]} onPress={() => setShowScreenLive(true)}>
+                    <Text style={styles.keyText} numberOfLines={1}>屏幕</Text>
+                  </TouchableOpacity>
                   <TouchableOpacity style={styles.keyBtn} onPress={() => sendToTerminal({ type: 'input', data: '/' })}>
                     <Text style={styles.keyText} numberOfLines={1}>/</Text>
                   </TouchableOpacity>
@@ -958,6 +976,42 @@ export default function TerminalScreen() {
           </View>
         )}
       </KeyboardAvoidingView>
+
+      <Modal
+        visible={showScreenLive}
+        animationType="fade"
+        transparent={false}
+        supportedOrientations={['portrait', 'landscape']}
+        onRequestClose={() => setShowScreenLive(false)}
+      >
+        <View style={styles.screenLiveModal}>
+          <StatusBar hidden />
+          <View style={[styles.screenLiveFrame, screenLiveFrameStyle]}>
+            <WebView
+              source={{ uri: screenLiveUrl }}
+              style={styles.screenLiveWebview}
+              javaScriptEnabled
+              domStorageEnabled
+              mixedContentMode="always"
+              scalesPageToFit
+              bounces
+              scrollEnabled
+              setBuiltInZoomControls
+              displayZoomControls={false}
+              startInLoadingState
+              renderLoading={renderTerminalFallback}
+              onError={() => {
+                setTimeout(() => {
+                  Alert.alert('错误', '屏幕实况加载失败，请检查 server 是否已重启并授予屏幕录制权限');
+                }, 100);
+              }}
+            />
+          </View>
+          <TouchableOpacity style={[styles.screenLiveClose, { top: Math.max(insets.top, 12) }]} onPress={() => setShowScreenLive(false)}>
+            <Text style={styles.screenLiveCloseText}>关闭</Text>
+          </TouchableOpacity>
+        </View>
+      </Modal>
 
       {/* Custom Commands Modal */}
       <Modal
@@ -1595,20 +1649,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
   },
   keyBtn: {
     paddingVertical: 6,
-    paddingHorizontal: 10,
+    paddingHorizontal: 8,
     backgroundColor: '#3a3a3a',
     borderRadius: 4,
-    minWidth: 40,
+    minWidth: 34,
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
   },
   keyboardToggleBtn: {
-    minWidth: 54,
+    minWidth: 48,
   },
   keyboardToggleBtnActive: {
     backgroundColor: '#157347',
@@ -1618,8 +1672,11 @@ const styles = StyleSheet.create({
   keyboardToggleBtnTextActive: {
     color: '#e9fff0',
   },
+  screenLiveBtn: {
+    minWidth: 48,
+  },
   spaceKeyBtn: {
-    minWidth: 88,
+    minWidth: 68,
   },
   keyText: {
     color: '#fff',
@@ -1649,6 +1706,38 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '500',
     marginTop: 4,
+  },
+  screenLiveModal: {
+    flex: 1,
+    backgroundColor: '#050505',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  screenLiveFrame: {
+    backgroundColor: '#050505',
+  },
+  screenLiveWebview: {
+    flex: 1,
+    backgroundColor: '#050505',
+  },
+  screenLiveClose: {
+    position: 'absolute',
+    right: 14,
+    minWidth: 58,
+    minHeight: 36,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 6,
+    backgroundColor: 'rgba(20, 20, 20, 0.82)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.22)',
+  },
+  screenLiveCloseText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '700',
   },
   imeKeyboardDock: {
     height: 376,
@@ -1715,19 +1804,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#222',
-    borderRadius: 6,
     marginBottom: 8,
     paddingHorizontal: 12,
     paddingVertical: 12,
-    borderWidth: 1,
-    borderColor: '#2f2f2f',
     gap: 12,
   },
-  consoleItemActive: {
-    backgroundColor: '#263126',
-    borderColor: '#3b6d46',
-  },
+  consoleItemActive: {},
   consoleItemMain: {
     flex: 1,
     flexDirection: 'row',

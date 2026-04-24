@@ -36,6 +36,10 @@ firefly/
 - **TUI 提示解析**：识别部分终端交互提示，并通过结构化消息回传移动端。
 - **健康检查**：`/health` 返回网关、当前 tmux、代理状态。
 - **会话列表 HTTP API**：`/api/tmux/sessions` 返回可切换控制台列表，移动端弹窗优先使用它，避免 WebSocket 未 ready 时列表为空。
+- **屏幕实况**：提供独立的 `/screen` 页面和 `/screen-ws` WebSocket，实时查看 server 机器的 GUI 桌面。
+- **WebP 帧传输**：屏幕实况使用系统截图 + `sharp` 编码 WebP，通过单独 WebSocket 推送二进制帧，不占用终端 WebSocket。
+- **GUI 与权限检测**：`/api/screen/status` 检测 server 是否有 GUI 桌面、屏幕录制权限是否可用，并返回屏幕实况状态。
+- **macOS 权限入口**：`/api/screen/open-permissions` 可从手机端触发打开 server 上的“屏幕录制”系统设置页。
 - **内网穿透**：可选启动 lanproxy 客户端，支持 SSL、断线重连、通道管理。
 - **pkg 打包**：服务端可打包为 macOS 独立可执行文件。
 
@@ -52,6 +56,7 @@ firefly/
 - **组合键面板**：支持 Ctrl / Shift / Alt / Cmd 组合键和常见字母、数字、符号输入。
 - **中文 Web 键盘**：内置拼音输入键盘，适合系统输入法在 WebView 终端中体验不佳的场景。
 - **输入模式切换**：底部 `键盘` 按钮可在系统输入法和 Web 中文键盘之间切换。
+- **屏幕实况按钮**：快捷按键栏中的 `屏幕` 按钮可打开横屏全屏页面，实时查看 server 桌面画面，并支持双指缩放。
 - **安全区适配**：兼容 iPhone Home Indicator，底部键盘和工具栏不会贴底。
 
 ## 快速开始
@@ -128,8 +133,33 @@ Node >= 22.11.0。
 说明：
 
 - 控制台列表来自 `GET /api/tmux/sessions`，同时保留 WebSocket 消息作为兜底。
+- 控制台条目采用无背景列表样式，当前控制台通过绿点和 `当前` 文本标识。
 - App 会记住上次使用的控制台，下次连接后自动尝试切回。
 - 如果关闭的是当前控制台，服务端会先切换到另一个可用控制台；如果没有其它控制台，会创建一个替代 session，避免连接直接断开。
+
+### 屏幕实况
+
+点击快捷按键栏中的 `屏幕` 可打开全屏屏幕实况页：
+
+- 页面会横屏展示 server 机器的桌面画面。
+- 画面通过独立 WebSocket `/screen-ws` 传输，不会阻塞终端输入输出。
+- 服务端使用系统截图获取画面，再用 `sharp` 编码为 WebP 帧推送到 App。
+- WebView 中使用 `<img>` 连续替换 WebP 帧，支持双指缩放和拖动画面。
+- macOS 首次使用需要给运行 server 的终端或应用授予“屏幕录制”权限；授权后通常需要重启 Firefly server。
+
+如果打开后提示权限或 GUI 不可用，可先访问：
+
+```bash
+curl "http://127.0.0.1:8080/api/screen/status?token=<WS_TOKEN>"
+```
+
+屏幕实况默认参数偏低带宽，可通过环境变量调整：
+
+```env
+SCREEN_WEBP_FPS=4
+SCREEN_WEBP_WIDTH=960
+SCREEN_WEBP_QUALITY=55
+```
 
 ### 中文键盘 / 输入模式
 
@@ -166,6 +196,20 @@ Node >= 22.11.0。
 | `TMUX_SESSION` | `mobile-dev` | 默认 tmux session 名称 |
 | `SERVER_TMUX_SESSION` | `firefly-server` | 服务端自身运行在 tmux 中时的保留 session 名，列表中会过滤它 |
 
+### 屏幕实况配置
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `SCREEN_WEBP_FPS` | `4` | WebP 屏幕实况推送帧率，范围 1~10 |
+| `SCREEN_WEBP_WIDTH` | `960` | WebP 帧最大宽度，范围 480~1920 |
+| `SCREEN_WEBP_QUALITY` | `55` | WebP 编码质量，范围 20~90 |
+
+说明：
+
+- macOS 使用系统 `screencapture` 获取屏幕帧，需要“屏幕录制”权限。
+- Linux 会根据桌面环境使用 `gnome-screenshot` 或 ImageMagick `import` 截图。
+- WebP 编码由 Node 侧的 `sharp` 完成，不依赖 ffmpeg 或 H.264。
+
 ### 内网穿透配置
 
 | 变量 | 默认值 | 说明 |
@@ -196,7 +240,10 @@ PROXY_SSL_ENABLE=true
 |------|------|------|
 | `GET /terminal?token=<WS_TOKEN>` | 是 | xterm.js 终端页面 |
 | `GET /keyboard?token=<WS_TOKEN>` | 是 | 中文屏幕键盘页面 |
+| `GET /screen?token=<WS_TOKEN>` | 是 | 屏幕实况页面 |
 | `GET /api/tmux/sessions?token=<WS_TOKEN>` | 是 | 返回可切换控制台列表 |
+| `GET /api/screen/status?token=<WS_TOKEN>` | 是 | 返回 GUI、权限和屏幕实况能力状态 |
+| `POST /api/screen/open-permissions?token=<WS_TOKEN>` | 是 | macOS 上打开屏幕录制权限设置页 |
 | `GET /health` | 否 | 健康检查和代理状态 |
 | `GET /assets/terminal-client.js` | 否 | 终端页脚本 |
 | `GET /assets/keyboard-client.js` | 否 | 中文键盘脚本 |
@@ -225,6 +272,20 @@ PROXY_SSL_ENABLE=true
 }
 ```
 
+`/api/screen/status` 返回示例：
+
+```json
+{
+  "ok": true,
+  "platform": "darwin",
+  "guiAvailable": true,
+  "webpAvailable": true,
+  "transport": "websocket",
+  "encoding": "webp",
+  "permission": "granted"
+}
+```
+
 启用内网穿透后：
 
 ```json
@@ -249,10 +310,21 @@ PROXY_SSL_ENABLE=true
 ws://<server-ip>:8080?token=<WS_TOKEN>
 ```
 
+屏幕实况连接地址：
+
+```text
+ws://<server-ip>:8080/screen-ws?token=<WS_TOKEN>
+```
+
 协议在同一个 WebSocket 中混合两类消息：
 
 - 原始字节 / 字符串：终端输入输出，直接写入 PTY 或 xterm.js。
 - JSON 控制消息：根据 `type` 和 `action` 做结构化控制。
+
+屏幕实况使用单独 WebSocket，不复用终端协议：
+
+- 二进制消息：单帧 WebP 图片，浏览器端直接作为 `image/webp` 显示。
+- JSON 消息：错误或关闭提示，例如 `{ "type": "error", "error": "..." }`。
 
 连接成功后服务端会发送：
 
@@ -354,6 +426,7 @@ server/dist/
 - `conf/**/*`
 - `lib/**/*.js`
 - `node-pty` 的 `spawn-helper` 和 prebuilds
+- `sharp` 运行时依赖会随 `node_modules` 安装；如需打包为单文件，请确认目标平台包含对应 sharp 原生包
 
 ## 内网穿透工作原理
 
@@ -393,3 +466,15 @@ npx react-native run-ios --device "iPhone" --no-packager
 - 确认 App 配置中的 `服务器地址` 是手机可访问的 `IP:端口`。
 - 确认 `WS_TOKEN` 和 App 中的密钥一致。
 - 确认服务端端口已监听：`lsof -Pan -iTCP:8080 -sTCP:LISTEN`。
+
+### 屏幕实况打不开或没有画面
+
+- 先确认状态接口返回 `ok: true`：
+
+  ```bash
+  curl "http://127.0.0.1:8080/api/screen/status?token=<WS_TOKEN>"
+  ```
+
+- macOS 需要在“系统设置 -> 隐私与安全性 -> 屏幕录制”中授权运行 Firefly server 的终端或应用。
+- 授权后请重启 Firefly server。
+- 如果画面带宽过高，可降低 `SCREEN_WEBP_FPS`、`SCREEN_WEBP_WIDTH` 或 `SCREEN_WEBP_QUALITY`。

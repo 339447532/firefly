@@ -5,9 +5,10 @@ const fs = require('fs/promises');
 const { createReadStream, existsSync, copyFileSync, chmodSync, mkdirSync } = require('fs');
 const path = require('path');
 const os = require('os');
-const { exec } = require('child_process');
+const { exec, execFile } = require('child_process');
 const util = require('util');
 const dotenv = require('dotenv');
+const sharp = require('sharp');
 
 const SOURCE_DIR = __dirname;
 const RUNTIME_DIR = process.pkg ? path.dirname(process.execPath) : SOURCE_DIR;
@@ -29,6 +30,7 @@ function ensureRuntimeEnvFile() {
 // Prefer a colocated .env next to the packaged binary.
 dotenv.config({ path: ensureRuntimeEnvFile() });
 const execAsync = util.promisify(exec);
+const execFileAsync = util.promisify(execFile);
 
 function resolveNodePtySpawnHelper() {
   const sourceCandidates = [
@@ -71,6 +73,10 @@ const TMUX_SESSION_PATH = process.env.TMUX_SESSION_PATH || os.homedir();
 const DEFAULT_TMUX_SESSION = process.env.TMUX_SESSION || 'mobile-dev';
 const SERVER_TMUX_SESSION = process.env.SERVER_TMUX_SESSION || 'firefly-server';
 const PROXY_ENABLE = process.env.PROXY_ENABLE === 'true';
+const SCREEN_FPS = Math.min(Math.max(Number(process.env.SCREEN_FPS || 2), 1), 8);
+const SCREEN_WEBP_FPS = Math.min(Math.max(Number(process.env.SCREEN_WEBP_FPS || 4), 1), 10);
+const SCREEN_WEBP_WIDTH = Math.min(Math.max(Number(process.env.SCREEN_WEBP_WIDTH || 960), 480), 1920);
+const SCREEN_WEBP_QUALITY = Math.min(Math.max(Number(process.env.SCREEN_WEBP_QUALITY || 55), 20), 90);
 const TMP_DIR = path.join(RUNTIME_DIR, 'uploads');
 const PUBLIC_DIR = path.join(SOURCE_DIR, 'public');
 const TERMINAL_PAGE = path.join(PUBLIC_DIR, 'index.html');
@@ -136,6 +142,14 @@ function writeJson(res, statusCode, payload) {
 function writeText(res, statusCode, text) {
   res.writeHead(statusCode, { 'Content-Type': 'text/plain; charset=utf-8' });
   res.end(text);
+}
+
+function writeHtml(res, statusCode, html) {
+  res.writeHead(statusCode, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store'
+  });
+  res.end(html);
 }
 
 function getCacheControl(filePath) {
@@ -455,6 +469,296 @@ async function sendDirectoryList(ws, dirPath) {
   );
 }
 
+async function commandExists(command) {
+  try {
+    await execAsync(`command -v ${shellQuote(command)}`);
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+async function startScreenWebpStream(ws) {
+  let closed = false;
+
+  const stop = () => {
+    closed = true;
+  };
+
+  ws.on('close', stop);
+  ws.on('error', stop);
+
+  while (!closed && ws.readyState === 1) {
+    const startedAt = Date.now();
+    try {
+      const frame = await captureDesktopFrame();
+      const webpFrame = await sharp(frame)
+        .resize({ width: SCREEN_WEBP_WIDTH, withoutEnlargement: true })
+        .webp({ quality: SCREEN_WEBP_QUALITY, effort: 1 })
+        .toBuffer();
+
+      if (ws.readyState === 1 && ws.bufferedAmount < 2 * 1024 * 1024) {
+        ws.send(webpFrame, { binary: true });
+      }
+    } catch (error) {
+      console.error('[ERR] WebP 屏幕帧失败:', error.message);
+      if (ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'error', error: error.message }));
+      }
+      break;
+    }
+
+    const waitMs = Math.max(0, Math.round(1000 / SCREEN_WEBP_FPS) - (Date.now() - startedAt));
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
+
+  if (ws.readyState === 1) {
+    ws.close();
+  }
+}
+async function getScreenCaptureStatus(options = {}) {
+  const shouldVerifyCapture = Boolean(options.verifyCapture);
+  const withCaptureVerification = async (status) => {
+    if (!shouldVerifyCapture || !status.ok) {
+      return status;
+    }
+
+    try {
+      await captureDesktopFrame();
+      return {
+        ...status,
+        webpAvailable: true,
+        transport: 'websocket',
+        encoding: 'webp',
+        permission: 'granted'
+      };
+    } catch (error) {
+      return {
+        ...status,
+        ok: false,
+        permission: process.platform === 'darwin' ? 'denied_or_unset' : 'unknown',
+        error: process.platform === 'darwin'
+          ? '无法读取屏幕画面，请给运行 server 的终端或 Firefly 程序授予“屏幕录制”权限，然后重启 server'
+          : `无法读取屏幕画面: ${error.message}`
+      };
+    }
+  };
+
+  if (process.platform === 'darwin') {
+    try {
+      await execAsync('pgrep -x WindowServer');
+    } catch (_error) {
+      return {
+        ok: false,
+        platform: process.platform,
+        guiAvailable: false,
+        permission: 'unknown',
+        error: '当前 server 没有检测到 macOS 图形桌面'
+      };
+    }
+
+    return withCaptureVerification({
+      ok: true,
+      platform: process.platform,
+      guiAvailable: true,
+      webpAvailable: true,
+      transport: 'websocket',
+      encoding: 'webp',
+      permission: 'unknown',
+      permissionUrl: 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'
+    });
+  }
+
+  if (process.platform === 'linux') {
+    const guiAvailable = Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+
+    if (!guiAvailable) {
+      return {
+        ok: false,
+        platform: process.platform,
+        guiAvailable: false,
+        permission: 'unknown',
+        error: '当前 server 没有 DISPLAY/WAYLAND_DISPLAY，像是无 GUI 的 Linux 环境'
+      };
+    }
+
+    const hasGnomeScreenshot = await commandExists('gnome-screenshot');
+    const hasImport = await commandExists('import');
+
+    if (!hasGnomeScreenshot && !hasImport) {
+      return {
+        ok: false,
+        platform: process.platform,
+        guiAvailable: true,
+        permission: 'unknown',
+        error: 'Linux 桌面需要安装 gnome-screenshot 或 ImageMagick import'
+      };
+    }
+
+    return withCaptureVerification({
+      ok: true,
+      platform: process.platform,
+      guiAvailable: true,
+      webpAvailable: true,
+      transport: 'websocket',
+      encoding: 'webp',
+      permission: 'unknown'
+    });
+  }
+
+  return {
+    ok: false,
+    platform: process.platform,
+    guiAvailable: false,
+    permission: 'unknown',
+    error: `暂不支持 ${process.platform} 的屏幕实况`
+  };
+}
+
+async function captureDesktopFrame() {
+  const framePath = path.join(TMP_DIR, `screen-${process.pid}-${Date.now()}.jpg`);
+
+  try {
+    if (process.platform === 'darwin') {
+      await execFileAsync('/usr/sbin/screencapture', ['-x', '-t', 'jpg', framePath], { timeout: 8000 });
+    } else if (process.platform === 'linux') {
+      if (await commandExists('gnome-screenshot')) {
+        await execFileAsync('gnome-screenshot', ['-f', framePath], { timeout: 8000 });
+      } else {
+        await execFileAsync('import', ['-window', 'root', framePath], { timeout: 8000 });
+      }
+    } else {
+      throw new Error(`unsupported platform: ${process.platform}`);
+    }
+
+    const frame = await fs.readFile(framePath);
+    if (!frame.length) {
+      throw new Error('empty screen frame');
+    }
+    return frame;
+  } finally {
+    fs.unlink(framePath).catch(() => {});
+  }
+}
+
+function getScreenPage(token) {
+  const encodedToken = encodeURIComponent(token || '');
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=4,user-scalable=yes,viewport-fit=cover">
+  <title>Firefly Screen Live</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; background: #050505; color: #f2f2f2; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { touch-action: pan-x pan-y pinch-zoom; }
+    #stage { width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; background: #050505; overflow: auto; -webkit-overflow-scrolling: touch; }
+    #screen { width: 100%; height: 100%; object-fit: contain; background: #050505; user-select: none; -webkit-user-drag: none; }
+    #panel { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 28px; background: rgba(0,0,0,.82); box-sizing: border-box; text-align: center; }
+    #panel.visible { display: flex; }
+    #message { max-width: 680px; line-height: 1.55; font-size: 16px; color: #e8e8e8; }
+    button { margin-top: 18px; border: 1px solid #5f8cff; background: #1e4fd6; color: #fff; border-radius: 6px; padding: 10px 14px; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div id="stage"><img id="screen" alt="server screen live"></div>
+  <div id="panel"><div><div id="message">正在检测屏幕实况...</div><button id="permissionBtn" hidden>打开屏幕录制权限</button></div></div>
+  <script>
+    const token = ${JSON.stringify(encodedToken)};
+    const screen = document.getElementById('screen');
+    const panel = document.getElementById('panel');
+    const message = document.getElementById('message');
+    const permissionBtn = document.getElementById('permissionBtn');
+    let currentUrl = '';
+    let frameCount = 0;
+
+    function showMessage(text, canOpenPermission) {
+      message.textContent = text;
+      permissionBtn.hidden = !canOpenPermission;
+      panel.classList.add('visible');
+    }
+
+    function startStream() {
+      panel.classList.remove('visible');
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(protocol + '//' + location.host + '/screen-ws?token=' + token);
+      ws.binaryType = 'arraybuffer';
+
+      ws.onmessage = (event) => {
+        if (typeof event.data === 'string') {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'error') {
+              showMessage(data.error || '屏幕实况不可用', false);
+            }
+          } catch (_error) {}
+          return;
+        }
+
+        const blob = new Blob([event.data], { type: 'image/webp' });
+        const nextUrl = URL.createObjectURL(blob);
+        const previousUrl = currentUrl;
+        currentUrl = nextUrl;
+        screen.onload = () => {
+          if (previousUrl) {
+            URL.revokeObjectURL(previousUrl);
+          }
+        };
+        screen.src = nextUrl;
+        frameCount += 1;
+        if (frameCount === 1) {
+          panel.classList.remove('visible');
+        }
+      };
+
+      ws.onerror = () => {
+        showMessage('WebSocket 屏幕实况连接失败，请检查 server 是否已重启。', false);
+      };
+
+      ws.onclose = () => {
+        if (!frameCount) {
+          showMessage('屏幕实况已断开。', false);
+        }
+      };
+
+      window.addEventListener('pagehide', () => {
+        ws.close();
+        if (currentUrl) {
+          URL.revokeObjectURL(currentUrl);
+        }
+      }, { once: true });
+    }
+
+    async function checkStatus() {
+      try {
+        const res = await fetch('/api/screen/status?token=' + token, { cache: 'no-store' });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          showMessage(data.error || '屏幕实况不可用', Boolean(data.permissionUrl));
+          return;
+        }
+        if (!data.webpAvailable) {
+          showMessage('server 无法使用 WebP 屏幕实况。', false);
+          return;
+        }
+        startStream();
+      } catch (error) {
+        showMessage('无法连接屏幕实况服务: ' + error.message, false);
+      }
+    }
+
+    permissionBtn.addEventListener('click', async () => {
+      await fetch('/api/screen/open-permissions?token=' + token, { method: 'POST' }).catch(() => {});
+      showMessage('已尝试在 server 上打开系统设置。授权后请重启 Firefly server，再重新进入屏幕实况。', false);
+    });
+
+    checkStatus();
+  </script>
+</body>
+</html>`;
+}
+
 async function handleNewSessionRequest(session, payload = {}) {
   const requestedName = normalizeSessionName(payload.name);
   const newSessionName = requestedName || `mobile-${Date.now()}`;
@@ -596,6 +900,113 @@ const httpServer = createServer((req, res) => {
     return;
   }
 
+  if (pathname === '/api/screen/status') {
+    if (reqToken !== AUTH_TOKEN) {
+      writeJson(res, 401, { ok: false, error: 'Unauthorized' });
+      return;
+    }
+
+    getScreenCaptureStatus({ verifyCapture: true })
+      .then((status) => writeJson(res, status.ok ? 200 : 503, status))
+      .catch((error) => {
+        writeJson(res, 500, { ok: false, error: error.message });
+      });
+    return;
+  }
+
+  if (pathname === '/api/screen/open-permissions') {
+    if (reqToken !== AUTH_TOKEN) {
+      writeJson(res, 401, { ok: false, error: 'Unauthorized' });
+      return;
+    }
+
+    if (req.method !== 'POST') {
+      writeJson(res, 405, { ok: false, error: 'Method Not Allowed' });
+      return;
+    }
+
+    if (process.platform !== 'darwin') {
+      writeJson(res, 400, { ok: false, error: 'Only macOS supports opening screen recording settings' });
+      return;
+    }
+
+    exec('open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"', (error) => {
+      writeJson(res, error ? 500 : 200, {
+        ok: !error,
+        error: error?.message
+      });
+    });
+    return;
+  }
+
+  if (pathname === '/api/screen/stream') {
+    if (reqToken !== AUTH_TOKEN) {
+      writeText(res, 401, 'Unauthorized');
+      return;
+    }
+
+    getScreenCaptureStatus()
+      .then(async (status) => {
+        if (!status.ok) {
+          writeJson(res, 503, status);
+          return;
+        }
+
+        const boundary = `firefly-screen-${Date.now()}`;
+        let closed = false;
+        const intervalMs = Math.round(1000 / SCREEN_FPS);
+
+        req.on('close', () => {
+          closed = true;
+        });
+
+        res.writeHead(200, {
+          'Content-Type': `multipart/x-mixed-replace; boundary=${boundary}`,
+          'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+          Pragma: 'no-cache',
+          Expires: '0',
+          Connection: 'close'
+        });
+
+        while (!closed && !res.destroyed) {
+          const startedAt = Date.now();
+          try {
+            const frame = await captureDesktopFrame();
+            res.write(`--${boundary}\r\n`);
+            res.write('Content-Type: image/jpeg\r\n');
+            res.write(`Content-Length: ${frame.length}\r\n\r\n`);
+            res.write(frame);
+            res.write('\r\n');
+          } catch (error) {
+            console.error('[ERR] 屏幕实况截图失败:', error.message);
+            if (!res.headersSent) {
+              writeJson(res, 500, { ok: false, error: error.message });
+            }
+            break;
+          }
+
+          const waitMs = Math.max(0, intervalMs - (Date.now() - startedAt));
+          await new Promise((resolve) => setTimeout(resolve, waitMs));
+        }
+
+        res.end();
+      })
+      .catch((error) => {
+        writeJson(res, 500, { ok: false, error: error.message });
+      });
+    return;
+  }
+
+  if (pathname === '/screen') {
+    if (reqToken !== AUTH_TOKEN) {
+      writeText(res, 401, 'Unauthorized');
+      return;
+    }
+
+    writeHtml(res, 200, getScreenPage(reqToken));
+    return;
+  }
+
   if (pathname === '/' || pathname === '/terminal' || pathname === '/keyboard') {
     if (reqToken !== AUTH_TOKEN) {
       writeText(res, 401, 'Unauthorized');
@@ -635,6 +1046,20 @@ wss.on('connection', async (ws, req) => {
   const url = getRequestUrl(req);
   if (url.searchParams.get('token') !== AUTH_TOKEN) {
     ws.close(4001, 'Unauthorized');
+    return;
+  }
+
+  if (url.pathname === '/screen-ws') {
+    console.log('[+] 屏幕 WebSocket 连接');
+    try {
+      await startScreenWebpStream(ws);
+    } catch (error) {
+      console.error('[ERR] 屏幕 WebSocket 启动失败:', error.message);
+      if (ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'error', error: error.message }));
+        ws.close();
+      }
+    }
     return;
   }
 

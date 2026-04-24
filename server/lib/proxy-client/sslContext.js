@@ -9,8 +9,8 @@ const path = require('path');
 const tls = require('tls');
 const config = require('./config');
 
-const SOURCE_DIR = path.join(__dirname, '..', '..', '..');
-const RUNTIME_DIR = process.pkg ? path.dirname(process.execPath) : SOURCE_DIR;
+const SERVER_DIR = path.join(__dirname, '..', '..');
+const RUNTIME_DIR = process.pkg ? path.dirname(process.execPath) : SERVER_DIR;
 
 function resolveCertPath(certPath) {
   if (path.isAbsolute(certPath)) {
@@ -21,8 +21,8 @@ function resolveCertPath(certPath) {
   if (fs.existsSync(runtimePath)) {
     return runtimePath;
   }
-  // Fall back to source directory
-  return path.join(SOURCE_DIR, certPath);
+  // Fall back to the source server directory during development.
+  return path.join(SERVER_DIR, certPath);
 }
 
 /**

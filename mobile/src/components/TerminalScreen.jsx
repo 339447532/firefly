@@ -19,6 +19,7 @@ export default function TerminalScreen() {
   const deleteRepeatTimeoutRef = useRef(null);
   const deleteRepeatIntervalRef = useRef(null);
   const suppressNextDeleteTapRef = useRef(false);
+  const preferredConsoleRef = useRef('');
   const [connected, setConnected] = useState(false);
   const [showExtraKeys, setShowExtraKeys] = useState(true);
   const [showCommandModal, setShowCommandModal] = useState(false);
@@ -26,9 +27,14 @@ export default function TerminalScreen() {
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [showKeyboardModal, setShowKeyboardModal] = useState(false);
   const [showFileBrowser, setShowFileBrowser] = useState(false);
+  const [showConsoleModal, setShowConsoleModal] = useState(false);
   const [selectedModifiers, setSelectedModifiers] = useState([]);
   const [serverIp, setServerIp] = useState(DEFAULT_IP);
   const [token, setToken] = useState(DEFAULT_TOKEN);
+  const [activeConsole, setActiveConsole] = useState('');
+  const [consoleSessions, setConsoleSessions] = useState([]);
+  const [consoleListLoading, setConsoleListLoading] = useState(false);
+  const [consoleListError, setConsoleListError] = useState('');
   const [fontSize, setFontSize] = useState(12);
   const [imeModeEnabled, setImeModeEnabled] = useState(false);
   const [showImeKeyboard, setShowImeKeyboard] = useState(false);
@@ -54,11 +60,15 @@ export default function TerminalScreen() {
 
   // Load persisted settings on mount
   useEffect(() => {
-    AsyncStorage.multiGet(['serverIp', 'token', 'fontSize', 'customCommands']).then(pairs => {
+    AsyncStorage.multiGet(['serverIp', 'token', 'fontSize', 'customCommands', 'activeConsole']).then(pairs => {
       const map = Object.fromEntries(pairs.map(([k, v]) => [k, v]));
       if (map.serverIp) setServerIp(map.serverIp);
       if (map.token) setToken(map.token);
       if (map.fontSize) setFontSize(parseInt(map.fontSize, 10));
+      if (map.activeConsole) {
+        preferredConsoleRef.current = map.activeConsole;
+        setActiveConsole(map.activeConsole);
+      }
       if (map.customCommands) {
         try { setCustomCommands(JSON.parse(map.customCommands)); } catch {}
       }
@@ -97,6 +107,73 @@ export default function TerminalScreen() {
     setTimeout(() => {
       Alert.alert('文件上传成功', `${fileName} 已发送到终端`);
     }, 100);
+  }, [sendToTerminal]);
+
+  const fetchConsoleList = useCallback(async () => {
+    setConsoleListLoading(true);
+    setConsoleListError('');
+
+    try {
+      const response = await fetch(`${httpBaseUrl}/api/tmux/sessions?token=${encodeURIComponent(token)}`);
+      const data = await response.json();
+
+      if (!response.ok || !data.ok) {
+        throw new Error(data.error || `HTTP ${response.status}`);
+      }
+
+      setConsoleSessions(data.sessions || []);
+      if (data.active) {
+        setActiveConsole(data.active);
+      }
+    } catch (error) {
+      setConsoleListError(error.message || '控制台列表加载失败');
+      sendToTerminal({ type: 'tmux_ctrl', action: 'list_sessions' });
+    } finally {
+      setConsoleListLoading(false);
+    }
+  }, [httpBaseUrl, sendToTerminal, token]);
+
+  const requestConsoleList = useCallback(() => {
+    sendToTerminal({ type: 'tmux_ctrl', action: 'list_sessions' });
+    fetchConsoleList();
+  }, [fetchConsoleList, sendToTerminal]);
+
+  const openConsoleModal = useCallback(() => {
+    setShowConsoleModal(true);
+    requestConsoleList();
+  }, [requestConsoleList]);
+
+  const switchConsole = useCallback((sessionName) => {
+    if (!sessionName || sessionName === activeConsole) {
+      setShowConsoleModal(false);
+      return;
+    }
+
+    sendToTerminal({ type: 'tmux_ctrl', action: 'switch_session', session: sessionName });
+    preferredConsoleRef.current = sessionName;
+    AsyncStorage.setItem('activeConsole', sessionName);
+    setShowConsoleModal(false);
+  }, [activeConsole, sendToTerminal]);
+
+  const closeConsole = useCallback((sessionName) => {
+    if (!sessionName) {
+      return;
+    }
+
+    Alert.alert(
+      '关闭控制台',
+      `确定要彻底关闭 ${sessionName} 吗？这会结束对应的 tmux 会话。`,
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '关闭',
+          style: 'destructive',
+          onPress: () => {
+            sendToTerminal({ type: 'tmux_ctrl', action: 'close_session', session: sessionName });
+          }
+        }
+      ]
+    );
   }, [sendToTerminal]);
 
   const pickDocumentFile = useCallback(async () => {
@@ -264,6 +341,7 @@ export default function TerminalScreen() {
           text: '创建',
           onPress: () => {
             sendToTerminal({ type: 'tmux_ctrl', action: 'new_session' });
+            setShowConsoleModal(false);
           }
         }
       ]
@@ -550,10 +628,22 @@ export default function TerminalScreen() {
       if (data.type === 'connected') {
         setConnected(true);
         setConnectionError(false);
+        if (data.tmux) {
+          const preferredConsole = preferredConsoleRef.current;
+          if (preferredConsole && preferredConsole !== data.tmux) {
+            sendToTerminal({ type: 'tmux_ctrl', action: 'switch_session', session: preferredConsole });
+          } else {
+            setActiveConsole(data.tmux);
+            AsyncStorage.setItem('activeConsole', data.tmux);
+          }
+        }
       } else if (data.type === 'disconnected') {
         setConnected(false);
       } else if (data.type === 'session_created') {
         if (data.success) {
+          preferredConsoleRef.current = data.session;
+          setActiveConsole(data.session);
+          AsyncStorage.setItem('activeConsole', data.session);
           setTimeout(() => {
             Alert.alert('成功', `会话 ${data.session} 已创建`);
           }, 100);
@@ -561,6 +651,41 @@ export default function TerminalScreen() {
           setTimeout(() => {
             Alert.alert('错误', `创建会话失败: ${data.error}`);
           }, 100);
+        }
+      } else if (data.type === 'session_switched') {
+        if (data.success) {
+          preferredConsoleRef.current = data.session;
+          setActiveConsole(data.session);
+          AsyncStorage.setItem('activeConsole', data.session);
+        } else {
+          setTimeout(() => {
+            Alert.alert('错误', `切换控制台失败: ${data.error}`);
+          }, 100);
+        }
+      } else if (data.type === 'session_closed') {
+        if (data.success) {
+          if (data.active) {
+            preferredConsoleRef.current = data.active;
+            setActiveConsole(data.active);
+            AsyncStorage.setItem('activeConsole', data.active);
+          } else if (data.session === activeConsole) {
+            preferredConsoleRef.current = '';
+            setActiveConsole('');
+            AsyncStorage.removeItem('activeConsole');
+          }
+          setConsoleSessions(prev => prev.filter(item => item.name !== data.session));
+          setTimeout(() => {
+            Alert.alert('已关闭', `控制台 ${data.session} 已关闭`);
+          }, 100);
+        } else {
+          setTimeout(() => {
+            Alert.alert('错误', `关闭控制台失败: ${data.error}`);
+          }, 100);
+        }
+      } else if (data.type === 'tmux_sessions') {
+        setConsoleSessions(data.sessions || []);
+        if (data.active) {
+          setActiveConsole(data.active);
         }
       } else if (data.type === 'cwd_response') {
         if (data.path) {
@@ -588,7 +713,7 @@ export default function TerminalScreen() {
     } catch (e) {
       // Ignore non-JSON messages
     }
-  }, [imeModeEnabled]);
+  }, [activeConsole, imeModeEnabled, sendToTerminal]);
 
   const renderTerminalFallback = useCallback(() => (
     <View style={styles.webviewFallback} />
@@ -609,14 +734,19 @@ export default function TerminalScreen() {
             <Text style={styles.statusText}>
               {connected ? '已连接' : (connectionError ? '请在配置中修改IP' : '连接中...')}
             </Text>
+            <TouchableOpacity style={styles.consoleChip} onPress={openConsoleModal}>
+              <Text style={styles.consoleChipText} numberOfLines={1}>
+                {activeConsole || '默认控制台'}
+              </Text>
+            </TouchableOpacity>
           </View>
           <View style={styles.statusRight}>
-            <TouchableOpacity onPress={handleNewSession} style={styles.statusBtn}>
+            <TouchableOpacity onPress={openConsoleModal} style={styles.statusBtn}>
               <Svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                <Rect x="3" y="3" width="18" height="18" rx="2" stroke="#aaa" strokeWidth="2"/>
-                <Path d="M12 8v8M8 12h8" stroke="#aaa" strokeWidth="2" strokeLinecap="round"/>
+                <Rect x="3" y="4" width="18" height="14" rx="2" stroke="#aaa" strokeWidth="2"/>
+                <Path d="M8 21h8M12 18v3M7 9h4M7 13h7" stroke="#aaa" strokeWidth="2" strokeLinecap="round"/>
               </Svg>
-              <Text style={styles.statusText}>新建</Text>
+              <Text style={styles.statusText}>控制台</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={openFileBrowser} style={styles.statusBtn}>
               <Svg width="16" height="16" viewBox="0 0 24 24" fill="none">
@@ -1199,6 +1329,82 @@ export default function TerminalScreen() {
         </View>
       </Modal>
 
+      {/* Console Switcher Modal */}
+      <Modal
+        visible={showConsoleModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowConsoleModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>控制台</Text>
+              <TouchableOpacity onPress={() => setShowConsoleModal(false)}>
+                <Text style={styles.modalClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <FlatList
+              data={consoleSessions}
+              keyExtractor={(item) => item.name}
+              contentContainerStyle={styles.consoleList}
+              renderItem={({ item }) => {
+                const isActive = item.name === activeConsole;
+
+                return (
+                  <View
+                    style={[styles.consoleItem, isActive && styles.consoleItemActive]}
+                  >
+                    <TouchableOpacity
+                      style={styles.consoleItemMain}
+                      onPress={() => switchConsole(item.name)}
+                    >
+                      <View style={[styles.consoleIndicator, isActive && styles.consoleIndicatorActive]} />
+                      <View style={styles.consoleTextBlock}>
+                        <Text style={styles.consoleName} numberOfLines={1}>
+                          {item.name}
+                        </Text>
+                        <Text style={styles.consoleMeta}>
+                          {item.windows || 0} 个窗口 · {item.attached || 0} 个连接
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                    <View style={styles.consoleItemActions}>
+                      {isActive && <Text style={styles.consoleActiveText}>当前</Text>}
+                      <TouchableOpacity
+                        style={styles.consoleCloseBtn}
+                        onPress={() => closeConsole(item.name)}
+                      >
+                        <Text style={styles.consoleCloseText}>关闭</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                );
+              }}
+              ListEmptyComponent={
+                <View style={styles.emptyList}>
+                  <Text style={styles.emptyText}>
+                    {consoleListLoading
+                      ? '正在加载控制台...'
+                      : (consoleListError ? `加载失败：${consoleListError}` : '暂无可切换控制台')}
+                  </Text>
+                </View>
+              }
+            />
+
+            <View style={styles.consoleActions}>
+              <TouchableOpacity style={styles.consoleActionBtn} onPress={requestConsoleList}>
+                <Text style={styles.consoleActionText}>刷新列表</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.consoleActionBtn, styles.consoleCreateBtn]} onPress={handleNewSession}>
+                <Text style={styles.consoleCreateText}>新建控制台</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* File Browser Modal */}
       <Modal
         visible={showFileBrowser}
@@ -1311,16 +1517,20 @@ const styles = StyleSheet.create({
     backgroundColor: '#2d2d2d',
     borderBottomWidth: 1,
     borderBottomColor: '#3d3d3d',
+    gap: 10,
   },
   statusLeft: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    minWidth: 0,
   },
   statusRight: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+    flexShrink: 0,
   },
   statusBtn: {
     flexDirection: 'row',
@@ -1341,6 +1551,21 @@ const styles = StyleSheet.create({
   statusText: {
     color: '#aaa',
     fontSize: 12,
+  },
+  consoleChip: {
+    flexShrink: 1,
+    maxWidth: 130,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    backgroundColor: '#1d1d1d',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#424242',
+  },
+  consoleChipText: {
+    color: '#d8d8d8',
+    fontSize: 11,
+    fontWeight: '600',
   },
   terminal: {
     flex: 1,
@@ -1481,6 +1706,108 @@ const styles = StyleSheet.create({
   commandList: {
     paddingHorizontal: 12,
     paddingVertical: 8,
+  },
+  consoleList: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  consoleItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#222',
+    borderRadius: 6,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: '#2f2f2f',
+    gap: 12,
+  },
+  consoleItemActive: {
+    backgroundColor: '#263126',
+    borderColor: '#3b6d46',
+  },
+  consoleItemMain: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minWidth: 0,
+    paddingRight: 4,
+  },
+  consoleIndicator: {
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+    backgroundColor: '#6f6f6f',
+  },
+  consoleIndicatorActive: {
+    backgroundColor: '#34c759',
+  },
+  consoleTextBlock: {
+    flex: 1,
+    minWidth: 0,
+  },
+  consoleName: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  consoleMeta: {
+    color: '#777',
+    fontSize: 11,
+    marginTop: 3,
+  },
+  consoleActiveText: {
+    color: '#8edc9a',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  consoleItemActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 0,
+  },
+  consoleCloseBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: '#332222',
+    borderRadius: 5,
+    borderWidth: 1,
+    borderColor: '#5a3030',
+  },
+  consoleCloseText: {
+    color: '#ff8f8f',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  consoleActions: {
+    flexDirection: 'row',
+    borderTopWidth: 1,
+    borderTopColor: '#2a2a2a',
+  },
+  consoleActionBtn: {
+    flex: 1,
+    paddingVertical: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  consoleCreateBtn: {
+    backgroundColor: '#2a2a2a',
+    borderLeftWidth: 1,
+    borderLeftColor: '#343434',
+  },
+  consoleActionText: {
+    color: '#aaa',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  consoleCreateText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
   },
   commandItem: {
     backgroundColor: '#222',

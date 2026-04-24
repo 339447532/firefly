@@ -60,7 +60,8 @@ function createProxyConnection(port, host) {
     return tls.connect({
       host: host,
       port: port,
-      rejectUnauthorized: false
+      rejectUnauthorized: false,
+      ...(sslContext ? { secureContext: sslContext } : {})
     });
   } else {
     const socket = new net.Socket();

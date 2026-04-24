@@ -69,6 +69,7 @@ const AUTH_TOKEN = process.env.WS_TOKEN || 'D6E0311D-0880-4D8C-8884-3B1AD1F93491
 const TMUX_PATH = process.env.TMUX_PATH || '/opt/homebrew/bin/tmux';
 const TMUX_SESSION_PATH = process.env.TMUX_SESSION_PATH || os.homedir();
 const DEFAULT_TMUX_SESSION = process.env.TMUX_SESSION || 'mobile-dev';
+const SERVER_TMUX_SESSION = process.env.SERVER_TMUX_SESSION || 'firefly-server';
 const PROXY_ENABLE = process.env.PROXY_ENABLE === 'true';
 const TMP_DIR = path.join(RUNTIME_DIR, 'uploads');
 const PUBLIC_DIR = path.join(SOURCE_DIR, 'public');
@@ -187,6 +188,81 @@ function resolvePublicAsset(pathname) {
 
 async function runTmux(args) {
   return execAsync(`${TMUX_PATH} ${args}`);
+}
+
+function normalizeSessionName(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[^A-Za-z0-9_.:-]/g, '-')
+    .slice(0, 64);
+}
+
+function isReservedTmuxSession(sessionName) {
+  return sessionName === SERVER_TMUX_SESSION;
+}
+
+async function listTmuxSessions() {
+  try {
+    const { stdout } = await runTmux(`list-sessions -F '#{session_name}|#{session_windows}|#{session_attached}'`);
+    return stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((line) => !isReservedTmuxSession(line.split('|')[0]))
+      .map((line) => {
+        const [name, windows, attached] = line.split('|');
+        return {
+          name,
+          windows: Number.parseInt(windows, 10) || 0,
+          attached: Number.parseInt(attached, 10) || 0
+        };
+      });
+  } catch (_error) {
+    return [];
+  }
+}
+
+async function tmuxSessionExists(sessionName) {
+  if (!sessionName || isReservedTmuxSession(sessionName)) {
+    return false;
+  }
+
+  try {
+    await runTmux(`has-session -t ${shellQuote(sessionName)}`);
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+async function resolveInitialTmuxSession(requestedSessionName) {
+  const requested = normalizeSessionName(requestedSessionName);
+
+  if (await tmuxSessionExists(requested)) {
+    return requested;
+  }
+
+  if (await tmuxSessionExists(currentTmuxSession)) {
+    return currentTmuxSession;
+  }
+
+  await ensureTmuxSession();
+  return currentTmuxSession;
+}
+
+async function sendTmuxSessionList(ws, activeSessionName = currentTmuxSession) {
+  ws.send(
+    JSON.stringify({
+      type: 'tmux_sessions',
+      active: activeSessionName,
+      sessions: await listTmuxSessions()
+    })
+  );
+}
+
+async function getFallbackSessionName(excludedSessionName) {
+  const sessionsList = await listTmuxSessions();
+  return sessionsList.find((item) => item.name !== excludedSessionName)?.name || '';
 }
 
 async function ensureTmuxSession() {
@@ -380,7 +456,8 @@ async function sendDirectoryList(ws, dirPath) {
 }
 
 async function handleNewSessionRequest(session, payload = {}) {
-  const newSessionName = payload.name || `mobile-${Date.now()}`;
+  const requestedName = normalizeSessionName(payload.name);
+  const newSessionName = requestedName || `mobile-${Date.now()}`;
   await createTmuxSession(newSessionName);
 
   currentTmuxSession = newSessionName;
@@ -393,8 +470,92 @@ async function handleNewSessionRequest(session, payload = {}) {
       success: true
     })
   );
+  await sendTmuxSessionList(session.ws, newSessionName);
 
   console.log(`[+] Created and attached to tmux session: ${newSessionName}`);
+}
+
+async function handleSwitchSessionRequest(session, payload = {}) {
+  const nextSessionName = normalizeSessionName(payload.session || payload.name);
+
+  if (!(await tmuxSessionExists(nextSessionName))) {
+    session.ws.send(
+      JSON.stringify({
+        type: 'session_switched',
+        session: nextSessionName,
+        success: false,
+        error: 'tmux session not found'
+      })
+    );
+    await sendTmuxSessionList(session.ws, session.tmuxSession);
+    return;
+  }
+
+  currentTmuxSession = nextSessionName;
+  await applyTmuxStatusSpacing(nextSessionName);
+  await replaceSessionAttachment(session, nextSessionName);
+
+  session.ws.send(
+    JSON.stringify({
+      type: 'session_switched',
+      session: nextSessionName,
+      success: true
+    })
+  );
+  await sendTmuxSessionList(session.ws, nextSessionName);
+
+  console.log(`[~] Switched terminal ${session.id} to tmux session: ${nextSessionName}`);
+}
+
+async function handleCloseSessionRequest(session, payload = {}) {
+  const targetSessionName = normalizeSessionName(payload.session || payload.name);
+
+  if (!(await tmuxSessionExists(targetSessionName))) {
+    session.ws.send(
+      JSON.stringify({
+        type: 'session_closed',
+        session: targetSessionName,
+        success: false,
+        error: 'tmux session not found'
+      })
+    );
+    await sendTmuxSessionList(session.ws, session.tmuxSession);
+    return;
+  }
+
+  let nextSessionName = session.tmuxSession;
+
+  if (targetSessionName === session.tmuxSession) {
+    nextSessionName = await getFallbackSessionName(targetSessionName);
+
+    if (!nextSessionName) {
+      nextSessionName = targetSessionName === DEFAULT_TMUX_SESSION
+        ? `mobile-${Date.now()}`
+        : DEFAULT_TMUX_SESSION;
+      await createTmuxSession(nextSessionName);
+    }
+
+    currentTmuxSession = nextSessionName;
+    await replaceSessionAttachment(session, nextSessionName);
+  }
+
+  await runTmux(`kill-session -t ${shellQuote(targetSessionName)}`);
+
+  if (currentTmuxSession === targetSessionName) {
+    currentTmuxSession = nextSessionName;
+  }
+
+  session.ws.send(
+    JSON.stringify({
+      type: 'session_closed',
+      session: targetSessionName,
+      active: nextSessionName,
+      success: true
+    })
+  );
+  await sendTmuxSessionList(session.ws, nextSessionName);
+
+  console.log(`[-] Closed tmux session: ${targetSessionName}`);
 }
 
 const httpServer = createServer((req, res) => {
@@ -412,6 +573,26 @@ const httpServer = createServer((req, res) => {
       health.proxy = { enabled: false };
     }
     writeJson(res, 200, health);
+    return;
+  }
+
+  if (pathname === '/api/tmux/sessions') {
+    if (reqToken !== AUTH_TOKEN) {
+      writeJson(res, 401, { ok: false, error: 'Unauthorized' });
+      return;
+    }
+
+    listTmuxSessions()
+      .then((tmuxSessions) => {
+        writeJson(res, 200, {
+          ok: true,
+          active: currentTmuxSession,
+          sessions: tmuxSessions
+        });
+      })
+      .catch((error) => {
+        writeJson(res, 500, { ok: false, error: error.message });
+      });
     return;
   }
 
@@ -450,12 +631,14 @@ const httpServer = createServer((req, res) => {
 
 const wss = new WebSocketServer({ server: httpServer });
 
-wss.on('connection', (ws, req) => {
+wss.on('connection', async (ws, req) => {
   const url = getRequestUrl(req);
   if (url.searchParams.get('token') !== AUTH_TOKEN) {
     ws.close(4001, 'Unauthorized');
     return;
   }
+
+  const initialTmuxSession = await resolveInitialTmuxSession(url.searchParams.get('session'));
 
   const sessionId = uuidv4();
   const session = {
@@ -463,8 +646,8 @@ wss.on('connection', (ws, req) => {
     ws,
     pty: null,
     tui: null,
-    tmuxMgr: new TmuxManager(currentTmuxSession),
-    tmuxSession: currentTmuxSession,
+    tmuxMgr: new TmuxManager(initialTmuxSession),
+    tmuxSession: initialTmuxSession,
     cols: 120,
     rows: 35,
     closed: false,
@@ -557,6 +740,12 @@ wss.on('connection', (ws, req) => {
             await session.tmuxMgr.closePane(payload.index);
           } else if (payload.action === 'new_session') {
             await handleNewSessionRequest(session, payload);
+          } else if (payload.action === 'list_sessions') {
+            await sendTmuxSessionList(ws, session.tmuxSession);
+          } else if (payload.action === 'switch_session') {
+            await handleSwitchSessionRequest(session, payload);
+          } else if (payload.action === 'close_session') {
+            await handleCloseSessionRequest(session, payload);
           }
 
           if (res) {
@@ -624,6 +813,18 @@ wss.on('connection', (ws, req) => {
           await handleNewSessionRequest(session, payload);
           break;
 
+        case 'list_sessions':
+          await sendTmuxSessionList(ws, session.tmuxSession);
+          break;
+
+        case 'switch_session':
+          await handleSwitchSessionRequest(session, payload);
+          break;
+
+        case 'close_session':
+          await handleCloseSessionRequest(session, payload);
+          break;
+
         case 'ping':
           ws.send(JSON.stringify({ type: 'pong', ts: Date.now() }));
           break;
@@ -642,6 +843,9 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.send(JSON.stringify({ type: 'connected', sessionId, tmux: session.tmuxSession }));
+  sendTmuxSessionList(ws, session.tmuxSession).catch((error) => {
+    console.error('[ERR] 发送 tmux 会话列表失败:', error.message);
+  });
 });
 
 async function start() {

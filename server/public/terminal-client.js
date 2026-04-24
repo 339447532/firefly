@@ -3,6 +3,7 @@
 (function bootstrapTerminal() {
   const params = new URLSearchParams(window.location.search);
   const token = params.get("token") || "";
+  const sessionName = params.get("session") || "";
   const fontSize = Number.parseInt(params.get("fontSize") || "12", 10);
   const container = document.getElementById("terminal-container");
   const wsProtocol = window.location.protocol === "https:" ? "wss://" : "ws://";
@@ -156,9 +157,11 @@
   });
 
   const connectWebSocket = () => {
-    const ws = new WebSocket(
-      wsProtocol + window.location.host + "?token=" + encodeURIComponent(token)
-    );
+    const wsParams = new URLSearchParams({ token });
+    if (sessionName) {
+      wsParams.set("session", sessionName);
+    }
+    const ws = new WebSocket(wsProtocol + window.location.host + "?" + wsParams.toString());
     ws.binaryType = "arraybuffer";
     window.terminalWS = ws;
 

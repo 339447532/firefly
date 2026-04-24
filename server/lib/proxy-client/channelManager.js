@@ -90,6 +90,7 @@ function createProxySocket(options = {}) {
       host: host,
       port: port,
       rejectUnauthorized: false,
+      ...(sslContext ? { secureContext: sslContext } : {}),
       ...options
     });
   } else {

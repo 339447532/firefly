@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
-import { View, StyleSheet, TouchableOpacity, Text, Alert, StatusBar, Modal, TextInput, FlatList, ScrollView, KeyboardAvoidingView, Platform, InteractionManager, useWindowDimensions } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, Text, Alert, StatusBar, Modal, TextInput, FlatList, ScrollView, KeyboardAvoidingView, Platform, InteractionManager, useWindowDimensions, Linking } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import { keepLocalCopy, pick, types } from '@react-native-documents/picker';
@@ -12,6 +12,8 @@ const DEFAULT_IP = '192.168.1.100:8080';
 const DEFAULT_TOKEN = 'D6E0311D-0880-4D8C-8884-3B1AD1F93491';
 const KEYBOARD_ASSET_VERSION = '20260421-traditional';
 const buildHttpBaseUrl = (ip) => `http://${ip}`;
+const SERVER_CONFIG_HINT = '请先在配置中填写正确的服务器地址和连接密钥';
+const GITHUB_URL = 'https://github.com/339447532/firefly';
 
 export default function TerminalScreen() {
   const insets = useSafeAreaInsets();
@@ -28,6 +30,7 @@ export default function TerminalScreen() {
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [showKeyboardModal, setShowKeyboardModal] = useState(false);
   const [showScreenLive, setShowScreenLive] = useState(false);
+  const [screenLiveError, setScreenLiveError] = useState(false);
   const [showFileBrowser, setShowFileBrowser] = useState(false);
   const [showConsoleModal, setShowConsoleModal] = useState(false);
   const [selectedModifiers, setSelectedModifiers] = useState([]);
@@ -129,7 +132,8 @@ export default function TerminalScreen() {
         setActiveConsole(data.active);
       }
     } catch (error) {
-      setConsoleListError(error.message || '控制台列表加载失败');
+      setConsoleSessions([]);
+      setConsoleListError(SERVER_CONFIG_HINT);
       sendToTerminal({ type: 'tmux_ctrl', action: 'list_sessions' });
     } finally {
       setConsoleListLoading(false);
@@ -137,14 +141,26 @@ export default function TerminalScreen() {
   }, [httpBaseUrl, sendToTerminal, token]);
 
   const requestConsoleList = useCallback(() => {
+    if (!connected) {
+      setConsoleSessions([]);
+      setConsoleListLoading(false);
+      setConsoleListError(SERVER_CONFIG_HINT);
+      return;
+    }
+
     sendToTerminal({ type: 'tmux_ctrl', action: 'list_sessions' });
     fetchConsoleList();
-  }, [fetchConsoleList, sendToTerminal]);
+  }, [connected, fetchConsoleList, sendToTerminal]);
 
   const openConsoleModal = useCallback(() => {
     setShowConsoleModal(true);
     requestConsoleList();
   }, [requestConsoleList]);
+
+  const openScreenLive = useCallback(() => {
+    setScreenLiveError(!connected);
+    setShowScreenLive(true);
+  }, [connected]);
 
   const switchConsole = useCallback((sessionName) => {
     if (!sessionName || sessionName === activeConsole) {
@@ -357,6 +373,12 @@ export default function TerminalScreen() {
     setTempFontSize(String(fontSize));
     setShowConfigModal(true);
   }, [serverIp, token, fontSize]);
+
+  const openGithubRepo = useCallback(() => {
+    Linking.openURL(GITHUB_URL).catch(() => {
+      Alert.alert('错误', '无法打开 GitHub 页面');
+    });
+  }, []);
 
   const handleSaveConfig = useCallback(() => {
     if (!tempIp.trim()) {
@@ -788,9 +810,21 @@ export default function TerminalScreen() {
         </View>
 
         {settingsLoaded && connectionError && (
-          <TouchableOpacity style={styles.connectionConfigHint} onPress={handleOpenConfig}>
-            <Text style={styles.connectionConfigHintText}>点击此处配置服务器IP</Text>
-          </TouchableOpacity>
+          <View style={styles.connectionConfigHint}>
+            <TouchableOpacity style={styles.connectionConfigHintMain} onPress={handleOpenConfig}>
+              <Text style={styles.connectionConfigHintText}>点击此处配置服务器IP</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.githubHintBtn}
+              onPress={openGithubRepo}
+              accessibilityRole="link"
+              accessibilityLabel="打开 Firefly GitHub 仓库"
+            >
+              <Svg width="18" height="18" viewBox="0 0 24 24" fill="#9a9a9a">
+                <Path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.52 2.87 8.36 6.84 9.72.5.1.68-.22.68-.5v-1.74c-2.78.62-3.37-1.38-3.37-1.38-.45-1.18-1.11-1.5-1.11-1.5-.91-.63.07-.62.07-.62 1 .07 1.53 1.06 1.53 1.06.9 1.57 2.35 1.12 2.92.86.09-.67.35-1.12.63-1.38-2.22-.26-4.55-1.14-4.55-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05A9.32 9.32 0 0112 6.97c.85 0 1.7.12 2.5.34 1.9-1.33 2.74-1.05 2.74-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.81-4.57 5.07.36.32.68.95.68 1.91v2.83c0 .28.18.61.69.5A10.14 10.14 0 0022 12.25C22 6.58 17.52 2 12 2z" />
+              </Svg>
+            </TouchableOpacity>
+          </View>
         )}
 
         <View style={styles.mainContent}>
@@ -876,7 +910,7 @@ export default function TerminalScreen() {
                       键盘
                     </Text>
                   </TouchableOpacity>
-                  <TouchableOpacity style={[styles.keyBtn, styles.screenLiveBtn]} onPress={() => setShowScreenLive(true)}>
+                  <TouchableOpacity style={[styles.keyBtn, styles.screenLiveBtn]} onPress={openScreenLive}>
                     <Text style={styles.keyText} numberOfLines={1}>屏幕</Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.keyBtn} onPress={() => sendToTerminal({ type: 'input', data: '/' })}>
@@ -986,27 +1020,41 @@ export default function TerminalScreen() {
       >
         <View style={styles.screenLiveModal}>
           <StatusBar hidden />
-          <View style={[styles.screenLiveFrame, screenLiveFrameStyle]}>
-            <WebView
-              source={{ uri: screenLiveUrl }}
-              style={styles.screenLiveWebview}
-              javaScriptEnabled
-              domStorageEnabled
-              mixedContentMode="always"
-              scalesPageToFit
-              bounces
-              scrollEnabled
-              setBuiltInZoomControls
-              displayZoomControls={false}
-              startInLoadingState
-              renderLoading={renderTerminalFallback}
-              onError={() => {
-                setTimeout(() => {
-                  Alert.alert('错误', '屏幕实况加载失败，请检查 server 是否已重启并授予屏幕录制权限');
-                }, 100);
-              }}
-            />
-          </View>
+          {screenLiveError ? (
+            <View style={styles.screenLivePrompt}>
+              <Text style={styles.screenLivePromptTitle}>服务未连接</Text>
+              <Text style={styles.screenLivePromptText}>{SERVER_CONFIG_HINT}</Text>
+              <TouchableOpacity
+                style={styles.screenLiveConfigBtn}
+                onPress={() => {
+                  setShowScreenLive(false);
+                  setTimeout(handleOpenConfig, 180);
+                }}
+              >
+                <Text style={styles.screenLiveConfigText}>去配置</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={[styles.screenLiveFrame, screenLiveFrameStyle]}>
+              <WebView
+                source={{ uri: screenLiveUrl }}
+                style={styles.screenLiveWebview}
+                javaScriptEnabled
+                domStorageEnabled
+                mixedContentMode="always"
+                scalesPageToFit
+                bounces
+                scrollEnabled
+                setBuiltInZoomControls
+                displayZoomControls={false}
+                startInLoadingState
+                renderLoading={renderTerminalFallback}
+                onLoadStart={() => setScreenLiveError(false)}
+                onError={() => setScreenLiveError(true)}
+                onHttpError={() => setScreenLiveError(true)}
+              />
+            </View>
+          )}
           <TouchableOpacity style={[styles.screenLiveClose, { top: Math.max(insets.top, 12) }]} onPress={() => setShowScreenLive(false)}>
             <Text style={styles.screenLiveCloseText}>关闭</Text>
           </TouchableOpacity>
@@ -1441,7 +1489,7 @@ export default function TerminalScreen() {
                   <Text style={styles.emptyText}>
                     {consoleListLoading
                       ? '正在加载控制台...'
-                      : (consoleListError ? `加载失败：${consoleListError}` : '暂无可切换控制台')}
+                      : (consoleListError || '暂无可切换控制台')}
                   </Text>
                 </View>
               }
@@ -1551,12 +1599,25 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   connectionConfigHint: {
+    flexDirection: 'row',
     backgroundColor: '#171717',
-    paddingVertical: 12,
     paddingHorizontal: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#2b2b2b',
     alignItems: 'center',
+    justifyContent: 'center',
+  },
+  connectionConfigHintMain: {
+    paddingVertical: 12,
+    paddingLeft: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  githubHintBtn: {
+    width: 44,
+    minHeight: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   connectionConfigHintText: {
     color: '#9a9a9a',
@@ -1720,6 +1781,43 @@ const styles = StyleSheet.create({
   screenLiveWebview: {
     flex: 1,
     backgroundColor: '#050505',
+  },
+  screenLivePrompt: {
+    width: '100%',
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 28,
+    backgroundColor: '#050505',
+  },
+  screenLivePromptTitle: {
+    color: '#f2f2f2',
+    fontSize: 20,
+    fontWeight: '700',
+    marginBottom: 10,
+  },
+  screenLivePromptText: {
+    color: '#a8a8a8',
+    fontSize: 14,
+    lineHeight: 22,
+    textAlign: 'center',
+    marginBottom: 22,
+  },
+  screenLiveConfigBtn: {
+    minWidth: 96,
+    minHeight: 40,
+    paddingHorizontal: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 6,
+    backgroundColor: '#191919',
+    borderWidth: 1,
+    borderColor: '#4a4a4a',
+  },
+  screenLiveConfigText: {
+    color: '#e6e6e6',
+    fontSize: 14,
+    fontWeight: '700',
   },
   screenLiveClose: {
     position: 'absolute',

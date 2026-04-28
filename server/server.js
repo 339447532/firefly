@@ -595,6 +595,7 @@ function getScreenStreamFfmpegArgs() {
   }
 
   if (process.platform === 'linux') {
+    const linuxInput = process.env.SCREEN_STREAM_INPUT || process.env.DISPLAY || ':0.0';
     return [
       '-hide_banner',
       '-loglevel', 'warning',
@@ -603,7 +604,7 @@ function getScreenStreamFfmpegArgs() {
       '-f', 'x11grab',
       '-draw_mouse', '1',
       '-framerate', String(SCREEN_STREAM_FPS),
-      '-i', SCREEN_STREAM_INPUT,
+      '-i', linuxInput,
       '-vf', filters.join(','),
       ...outputArgs
     ];
@@ -612,15 +613,49 @@ function getScreenStreamFfmpegArgs() {
   throw new Error(`暂不支持 ${process.platform} 的推流屏幕采集`);
 }
 
+function getLinuxX11Env() {
+  const env = { ...process.env };
+  if (process.platform !== 'linux') {
+    return env;
+  }
+
+  if (!env.DISPLAY) {
+    env.DISPLAY = ':0';
+  }
+
+  if (!env.XAUTHORITY) {
+    const candidates = [
+      path.join(os.homedir(), '.Xauthority'),
+      path.join(os.tmpdir(), `.X11-unix/X${env.DISPLAY.replace(/^:/, '')}`),
+      `/run/user/${process.getuid?.() || 1000}/gdm/Xauthority`,
+      `/run/user/${process.getuid?.() || 1000}/.mutter-Xauthority`,
+    ];
+    for (const p of candidates) {
+      if (existsSync(p)) {
+        env.XAUTHORITY = p;
+        break;
+      }
+    }
+  }
+
+  return env;
+}
+
 function startScreenMpegTsStream(ws) {
   const args = getScreenStreamFfmpegArgs();
+  const env = getLinuxX11Env();
   const ffmpeg = spawn(FFMPEG_PATH, args, {
-    stdio: ['ignore', 'pipe', 'pipe']
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env,
   });
   let closed = false;
   let stderr = '';
 
-  console.log(`[+] 屏幕 MPEG-TS 推流启动: ${FFMPEG_PATH} ${args.map(shellQuote).join(' ')}`);
+  if (process.platform === 'linux') {
+    console.log(`[+] 屏幕 MPEG-TS 推流启动: DISPLAY=${env.DISPLAY || '(none)'} XAUTHORITY=${env.XAUTHORITY || '(none)'} ${FFMPEG_PATH} ${args.map(shellQuote).join(' ')}`);
+  } else {
+    console.log(`[+] 屏幕 MPEG-TS 推流启动: ${FFMPEG_PATH} ${args.map(shellQuote).join(' ')}`);
+  }
 
   const stop = () => {
     if (closed) {

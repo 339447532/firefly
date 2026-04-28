@@ -223,13 +223,14 @@ SCREEN_STREAM_DROP_DUPLICATE_FRAMES=true
 | `SCREEN_STREAM_MUXDELAY` | `0` | MPEG-TS 封装延迟 |
 | `SCREEN_STREAM_DROP_DUPLICATE_FRAMES` | `false` | 是否丢弃静止画面重复帧以节省带宽 |
 | `SCREEN_STREAM_DEDUP_FILTER` | `mpdecimate=hi=768:lo=320:frac=0.33` | 重复帧过滤参数 |
-| `SCREEN_STREAM_INPUT` | macOS: `Capture screen 0:none`; Linux: `:0.0` | ffmpeg 屏幕采集输入 |
+| `SCREEN_STREAM_INPUT` | macOS: `Capture screen 0:none`; Linux: 自动跟随 `DISPLAY` | ffmpeg 屏幕采集输入；Linux 下如未设置，自动使用 `DISPLAY` 环境变量，无需手动指定 |
 | `SCREEN_STREAM_MAX_BUFFERED_BYTES` | `524288` | WebSocket 待发送队列超过该值时丢弃旧流数据 |
 
 说明：
 
 - macOS 使用 ffmpeg `avfoundation` 采集桌面，需要“屏幕录制”权限；远程控制鼠标键盘还需要“辅助功能”权限。
 - Linux 使用 ffmpeg `x11grab` 采集桌面，鼠标键盘控制需要安装 `xdotool`。
+- **Linux 自动检测**：server 启动 ffmpeg 时会自动补全 `DISPLAY` 和 `XAUTHORITY` 环境变量。如果当前进程没有 `DISPLAY`，默认 fallback 到 `:0`，并自动搜索 `~/.Xauthority`、`/run/user/1000/gdm/Xauthority` 等常见路径。ffmpeg 的输入设备也会自动跟随检测到的 `DISPLAY`，无需在 `.env` 中硬编码 `SCREEN_STREAM_INPUT`。
 - 推流编码为 MPEG1/MPEG-TS，并由 `server/public/vendor/jsmpeg-player.umd.min.js` 在浏览器中播放。
 
 ### 内网穿透配置
@@ -515,3 +516,15 @@ npx react-native run-ios --device "iPhone" --no-packager
 - 授权后请重启 Firefly server。
 - 确认 server 机器已安装 `ffmpeg`，Linux 远程控制还需要 `xdotool`。
 - 如果画面带宽过高，可降低 `SCREEN_STREAM_WIDTH`、`SCREEN_STREAM_BITRATE`，或开启 `SCREEN_STREAM_DROP_DUPLICATE_FRAMES=true`。
+
+### Linux 屏幕实况提示 Cannot open display
+
+如果日志出现 `Cannot open display :0.0, error 1` 或类似错误：
+
+1. **确认 server 和图形桌面是同一个用户**。systemd / root 启动的 server 通常无法访问普通用户的 X11 会话。
+2. **在图形桌面终端中直接启动 server**，这样 `DISPLAY` 和 `XAUTHORITY` 会自动继承：
+   ```bash
+   cd server && node server.js
+   ```
+3. **检查自动检测值**：server 日志会打印 `DISPLAY=... XAUTHORITY=...`，确认它们指向的会话真实存在。
+4. **不要硬编码 `.env` 中的 `SCREEN_STREAM_INPUT`**。Linux 下该值已改为自动跟随 `DISPLAY`，`.env` 中保留注释即可。

@@ -100,6 +100,18 @@ tmux attach -t <session-name>
 - `TMUX_SESSION_PATH`：创建新 session 时的工作目录，默认当前用户家目录
 - `TMUX_SESSION`：默认连接的 session 名称，默认 `mobile-dev`
 - `NODE_PTY_SPAWN_HELPER`：通常由程序自动设置，无需手动指定
+- `FFMPEG_PATH`：`ffmpeg` 可执行文件路径，默认 `ffmpeg`
+- `SCREEN_STREAM_FPS`：屏幕 MPEG-TS 推流帧率，默认 `24`，会对齐到 `24/25/30`
+- `SCREEN_STREAM_WIDTH`：推流宽度，默认 `1024`，设为 `0` 保留原始宽度
+- `SCREEN_STREAM_QUALITY`：MPEG1 VBR 质量，默认 `2`，数值越小画质越高、体积越大
+- `SCREEN_STREAM_QMAX`：复杂画面允许的最低质量，默认 `6`
+- `SCREEN_STREAM_BITRATE`：VBR 峰值码率上限，默认 `2200k`
+- `SCREEN_STREAM_BUFFER_SIZE`：编码缓冲大小，默认 `800k`，越小通常延迟越低
+- `SCREEN_STREAM_GOP`：关键帧间隔，默认 `12`
+- `SCREEN_STREAM_MUXDELAY`：MPEG-TS 封装延迟，默认 `0`
+- `SCREEN_STREAM_DROP_DUPLICATE_FRAMES`：启用静止画面去重，默认 `false`；设为 `true` 后重复帧会被丢弃以节省带宽
+- `SCREEN_STREAM_DEDUP_FILTER`：去重滤镜参数，默认 `mpdecimate=hi=768:lo=320:frac=0.33`
+- `SCREEN_STREAM_MAX_BUFFERED_BYTES`：WebSocket 待发送队列超过该值时丢弃旧流数据，默认 `524288`
 
 建议至少显式配置：
 
@@ -109,6 +121,13 @@ WS_TOKEN=replace-with-your-token
 TMUX_PATH=/opt/homebrew/bin/tmux
 TMUX_SESSION=mobile-dev
 TMUX_SESSION_PATH=/Users/your-name
+SCREEN_STREAM_WIDTH=1024
+SCREEN_STREAM_QUALITY=2
+SCREEN_STREAM_QMAX=6
+SCREEN_STREAM_BITRATE=2200k
+SCREEN_STREAM_BUFFER_SIZE=800k
+SCREEN_STREAM_GOP=12
+SCREEN_STREAM_DROP_DUPLICATE_FRAMES=true
 ```
 
 ## 页面与连接方式

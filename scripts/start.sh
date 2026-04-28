@@ -93,6 +93,28 @@ check_dependencies() {
     else
         log_info "tmux $(tmux -V) - OK"
     fi
+
+    # Check ffmpeg (required for screen streaming)
+    if ! command_exists ffmpeg; then
+        log_warn "ffmpeg not found. Screen live streaming will NOT work."
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            log_info "Install with: brew install ffmpeg"
+        elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+            log_info "Install with: sudo apt install ffmpeg  (or yum/pacman equivalent)"
+        fi
+    else
+        log_info "ffmpeg $(ffmpeg -version | head -n1 | awk '{print $3}') - OK"
+    fi
+
+    # Check xdotool (Linux only, required for keyboard/mouse control)
+    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        if ! command_exists xdotool; then
+            log_warn "xdotool not found. Linux screen keyboard/mouse control will NOT work."
+            log_info "Install with: sudo apt install xdotool  (or yum/pacman equivalent)"
+        else
+            log_info "xdotool $(xdotool --version | awk '{print $3}') - OK"
+        fi
+    fi
 }
 
 # Initialize tmux session

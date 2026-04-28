@@ -41,8 +41,9 @@ firefly/
 - **TUI 提示解析**：识别部分终端交互提示，并通过结构化消息回传移动端。
 - **健康检查**：`/health` 返回网关、当前 tmux、代理状态。
 - **会话列表 HTTP API**：`/api/tmux/sessions` 返回可切换控制台列表，移动端弹窗优先使用它，避免 WebSocket 未 ready 时列表为空。
-- **屏幕实况**：提供独立的 `/screen` 页面和 `/screen-ws` WebSocket，实时查看 server 机器的 GUI 桌面。
-- **WebP 帧传输**：屏幕实况使用系统截图 + `sharp` 编码 WebP，通过单独 WebSocket 推送二进制帧，不占用终端 WebSocket。
+- **屏幕实况**：提供独立的 `/screen` 页面，实时查看并控制 server 机器的 GUI 桌面。
+- **MPEG-TS 低延迟推流**：屏幕实况使用 `ffmpeg` 采集桌面并编码为 MPEG1/MPEG-TS，通过 `/screen-stream` WebSocket 推送到 JSMpeg 播放器，不占用终端 WebSocket。
+- **远程鼠标键盘控制**：屏幕实况页提供鼠标摇杆、左右键、滚轮和屏幕键盘；macOS 使用辅助功能事件，Linux 使用 `xdotool`。
 - **GUI 与权限检测**：`/api/screen/status` 检测 server 是否有 GUI 桌面、屏幕录制权限是否可用，并返回屏幕实况状态。
 - **macOS 权限入口**：`/api/screen/open-permissions` 可从手机端触发打开 server 上的“屏幕录制”系统设置页。
 - **内网穿透**：可选启动 lanproxy 客户端，支持 SSL、断线重连、通道管理。
@@ -61,7 +62,7 @@ firefly/
 - **组合键面板**：支持 Ctrl / Shift / Alt / Cmd 组合键和常见字母、数字、符号输入。
 - **中文 Web 键盘**：内置拼音输入键盘，适合系统输入法在 WebView 终端中体验不佳的场景。
 - **输入模式切换**：底部 `键盘` 按钮可在系统输入法和 Web 中文键盘之间切换。
-- **屏幕实况按钮**：快捷按键栏中的 `屏幕` 按钮可打开横屏全屏页面，实时查看 server 桌面画面，并支持双指缩放。
+- **屏幕实况按钮**：快捷按键栏中的 `屏幕` 按钮可打开横屏全屏页面，实时查看和控制 server 桌面画面，并支持双指缩放。
 - **安全区适配**：兼容 iPhone Home Indicator，底部键盘和工具栏不会贴底。
 
 ## 快速开始
@@ -147,10 +148,11 @@ Node >= 22.11.0。
 点击快捷按键栏中的 `屏幕` 可打开全屏屏幕实况页：
 
 - 页面会横屏展示 server 机器的桌面画面。
-- 画面通过独立 WebSocket `/screen-ws` 传输，不会阻塞终端输入输出。
-- 服务端使用系统截图获取画面，再用 `sharp` 编码为 WebP 帧推送到 App。
-- WebView 中使用 `<img>` 连续替换 WebP 帧，支持双指缩放和拖动画面。
+- 画面通过独立 WebSocket `/screen-stream` 推送 MPEG-TS 数据，不会阻塞终端输入输出。
+- WebView 中使用 JSMpeg 播放 MPEG1 视频流，支持双指缩放和拖动画面。
+- 鼠标和键盘控制走独立 WebSocket `/screen-ws`：支持屏幕点击、右键、滚轮、鼠标摇杆和屏幕键盘。
 - macOS 首次使用需要给运行 server 的终端或应用授予“屏幕录制”权限；授权后通常需要重启 Firefly server。
+- 如果需要从手机控制鼠标键盘，macOS 还需要授予“辅助功能”权限；Linux 需要安装 `xdotool`。
 
 如果打开后提示权限或 GUI 不可用，可先访问：
 
@@ -158,12 +160,17 @@ Node >= 22.11.0。
 curl "http://127.0.0.1:8080/api/screen/status?token=<WS_TOKEN>"
 ```
 
-屏幕实况默认参数偏低带宽，可通过环境变量调整：
+屏幕实况默认参数偏低延迟，可通过环境变量调整：
 
 ```env
-SCREEN_WEBP_FPS=4
-SCREEN_WEBP_WIDTH=960
-SCREEN_WEBP_QUALITY=55
+SCREEN_STREAM_FPS=24
+SCREEN_STREAM_WIDTH=1024
+SCREEN_STREAM_QUALITY=2
+SCREEN_STREAM_QMAX=6
+SCREEN_STREAM_BITRATE=2200k
+SCREEN_STREAM_BUFFER_SIZE=800k
+SCREEN_STREAM_GOP=12
+SCREEN_STREAM_DROP_DUPLICATE_FRAMES=true
 ```
 
 ### 中文键盘 / 输入模式
@@ -205,15 +212,25 @@ SCREEN_WEBP_QUALITY=55
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `SCREEN_WEBP_FPS` | `4` | WebP 屏幕实况推送帧率，范围 1~10 |
-| `SCREEN_WEBP_WIDTH` | `960` | WebP 帧最大宽度，范围 480~1920 |
-| `SCREEN_WEBP_QUALITY` | `55` | WebP 编码质量，范围 20~90 |
+| `FFMPEG_PATH` | `ffmpeg` | ffmpeg 可执行文件路径 |
+| `SCREEN_STREAM_FPS` | `24` | MPEG-TS 推流帧率，会对齐到 `24` / `25` / `30` |
+| `SCREEN_STREAM_WIDTH` | `1024` | 推流宽度，范围 480~1920；设为 `0` 保留原始宽度 |
+| `SCREEN_STREAM_QUALITY` | `2` | MPEG1 VBR 质量，数值越小画质越高、体积越大 |
+| `SCREEN_STREAM_QMAX` | `6` | 复杂画面允许的最低质量 |
+| `SCREEN_STREAM_BITRATE` | `2200k` | VBR 峰值码率上限 |
+| `SCREEN_STREAM_BUFFER_SIZE` | `800k` | 编码缓冲大小，越小通常延迟越低 |
+| `SCREEN_STREAM_GOP` | `12` | 关键帧间隔 |
+| `SCREEN_STREAM_MUXDELAY` | `0` | MPEG-TS 封装延迟 |
+| `SCREEN_STREAM_DROP_DUPLICATE_FRAMES` | `false` | 是否丢弃静止画面重复帧以节省带宽 |
+| `SCREEN_STREAM_DEDUP_FILTER` | `mpdecimate=hi=768:lo=320:frac=0.33` | 重复帧过滤参数 |
+| `SCREEN_STREAM_INPUT` | macOS: `Capture screen 0:none`; Linux: `:0.0` | ffmpeg 屏幕采集输入 |
+| `SCREEN_STREAM_MAX_BUFFERED_BYTES` | `524288` | WebSocket 待发送队列超过该值时丢弃旧流数据 |
 
 说明：
 
-- macOS 使用系统 `screencapture` 获取屏幕帧，需要“屏幕录制”权限。
-- Linux 会根据桌面环境使用 `gnome-screenshot` 或 ImageMagick `import` 截图。
-- WebP 编码由 Node 侧的 `sharp` 完成，不依赖 ffmpeg 或 H.264。
+- macOS 使用 ffmpeg `avfoundation` 采集桌面，需要“屏幕录制”权限；远程控制鼠标键盘还需要“辅助功能”权限。
+- Linux 使用 ffmpeg `x11grab` 采集桌面，鼠标键盘控制需要安装 `xdotool`。
+- 推流编码为 MPEG1/MPEG-TS，并由 `server/public/vendor/jsmpeg-player.umd.min.js` 在浏览器中播放。
 
 ### 内网穿透配置
 
@@ -285,8 +302,8 @@ PROXY_SSL_ENABLE=true
   "platform": "darwin",
   "guiAvailable": true,
   "webpAvailable": true,
-  "transport": "websocket",
-  "encoding": "webp",
+  "transport": "mpegts-websocket",
+  "encoding": "mpeg1video-mpegts",
   "permission": "granted"
 }
 ```
@@ -318,6 +335,12 @@ ws://<server-ip>:8080?token=<WS_TOKEN>
 屏幕实况连接地址：
 
 ```text
+ws://<server-ip>:8080/screen-stream?token=<WS_TOKEN>
+```
+
+屏幕控制连接地址：
+
+```text
 ws://<server-ip>:8080/screen-ws?token=<WS_TOKEN>
 ```
 
@@ -328,8 +351,14 @@ ws://<server-ip>:8080/screen-ws?token=<WS_TOKEN>
 
 屏幕实况使用单独 WebSocket，不复用终端协议：
 
-- 二进制消息：单帧 WebP 图片，浏览器端直接作为 `image/webp` 显示。
+- `/screen-stream` 二进制消息：MPEG-TS 数据块，浏览器端由 JSMpeg 解码播放。
 - JSON 消息：错误或关闭提示，例如 `{ "type": "error", "error": "..." }`。
+
+屏幕控制使用 `/screen-ws`：
+
+- `screen_mouse`：发送点击、按下、释放、相对移动、绝对移动和滚轮事件。
+- `screen_keyboard`：发送单键、组合键和文本输入。
+- JSON 错误消息：`{ "type": "control_error", "error": "..." }`。
 
 连接成功后服务端会发送：
 
@@ -405,6 +434,7 @@ ws://<server-ip>:8080/screen-ws?token=<WS_TOKEN>
 - 终端脚本：`server/public/terminal-client.js`
 - 中文键盘页面：`server/public/keyboard.html`
 - 中文键盘脚本：`server/public/keyboard-client.js`
+- 屏幕实况播放器：`server/public/vendor/jsmpeg-player.umd.min.js`
 - 拼音数据：`server/public/vendor/pinyin-data/`
 
 移动端 WebView 加载服务端页面；Android/iOS 工程中也保留了 xterm 相关资源，供平台打包和兼容使用。
@@ -481,5 +511,7 @@ npx react-native run-ios --device "iPhone" --no-packager
   ```
 
 - macOS 需要在“系统设置 -> 隐私与安全性 -> 屏幕录制”中授权运行 Firefly server 的终端或应用。
+- 如果要从手机控制鼠标键盘，还需要在“系统设置 -> 隐私与安全性 -> 辅助功能”中授权运行 Firefly server 的终端或应用。
 - 授权后请重启 Firefly server。
-- 如果画面带宽过高，可降低 `SCREEN_WEBP_FPS`、`SCREEN_WEBP_WIDTH` 或 `SCREEN_WEBP_QUALITY`。
+- 确认 server 机器已安装 `ffmpeg`，Linux 远程控制还需要 `xdotool`。
+- 如果画面带宽过高，可降低 `SCREEN_STREAM_WIDTH`、`SCREEN_STREAM_BITRATE`，或开启 `SCREEN_STREAM_DROP_DUPLICATE_FRAMES=true`。

@@ -1043,8 +1043,8 @@ export default function TerminalScreen() {
                 domStorageEnabled
                 mixedContentMode="always"
                 scalesPageToFit
-                bounces
-                scrollEnabled
+                bounces={false}
+                scrollEnabled={false}
                 setBuiltInZoomControls
                 displayZoomControls={false}
                 startInLoadingState
@@ -1056,7 +1056,9 @@ export default function TerminalScreen() {
             </View>
           )}
           <TouchableOpacity style={[styles.screenLiveClose, { top: Math.max(insets.top, 12) }]} onPress={() => setShowScreenLive(false)}>
-            <Text style={styles.screenLiveCloseText}>关闭</Text>
+            <Svg width={18} height={18} viewBox="0 0 18 18">
+              <Path d="M4 4L14 14M14 4L4 14" stroke="#fff" strokeWidth={2} strokeLinecap="round" />
+            </Svg>
           </TouchableOpacity>
         </View>
       </Modal>
@@ -1822,20 +1824,14 @@ const styles = StyleSheet.create({
   screenLiveClose: {
     position: 'absolute',
     right: 14,
-    minWidth: 58,
-    minHeight: 36,
-    paddingHorizontal: 12,
+    width: 36,
+    height: 36,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 6,
-    backgroundColor: 'rgba(20, 20, 20, 0.82)',
+    borderRadius: 18,
+    backgroundColor: 'rgba(20, 20, 20, 0.7)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.22)',
-  },
-  screenLiveCloseText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '700',
+    borderColor: 'rgba(255, 255, 255, 0.2)',
   },
   imeKeyboardDock: {
     height: 376,

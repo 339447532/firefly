@@ -4,6 +4,11 @@ Firefly 是一个移动端远程终端控制方案：React Native App 通过 Web
 
 项目同时集成了可选的 proxy https://github.com/339447532/qiproxy 客户端，可将本机内网服务暴露到公网代理服务器。
 
+
+https://github.com/user-attachments/assets/50cd2d14-f25d-447f-80ef-73fb3116f581
+
+
+
 ## 项目结构
 
 ```text

@@ -14,6 +14,65 @@ if linkage != nil
   use_frameworks! :linkage => linkage.to_sym
 end
 
+def configure_prebuilt_framework_dsym_phase
+  # React Native ships these as prebuilt frameworks. The App Store validates
+  # their UUIDs against the archive's dSYM folder, so generate matching dSYMs
+  # from the embedded binaries during iPhoneOS Release archives.
+  prebuilt_dsym_script = <<~'SCRIPT'
+    set -euo pipefail
+
+    if [ "${CONFIGURATION}" != "Release" ] || [ "${PLATFORM_NAME}" != "iphoneos" ]; then
+      exit 0
+    fi
+
+    FRAMEWORKS_DIR="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"
+    mkdir -p "${DWARF_DSYM_FOLDER_PATH}"
+
+    for framework_name in React ReactNativeDependencies hermesvm; do
+      binary="${FRAMEWORKS_DIR}/${framework_name}.framework/${framework_name}"
+      dsym_path="${DWARF_DSYM_FOLDER_PATH}/${framework_name}.framework.dSYM"
+
+      if [ -f "${binary}" ]; then
+        echo "Generating dSYM for ${framework_name}.framework"
+        /usr/bin/dsymutil "${binary}" -o "${dsym_path}"
+      else
+        echo "warning: ${binary} not found; skipping dSYM generation"
+      fi
+    done
+  SCRIPT
+
+  app_project = Xcodeproj::Project.open(File.join(__dir__, 'Firefly.xcodeproj'))
+  app_target = app_project.targets.find { |target| target.name == 'Firefly' }
+
+  return unless app_target
+
+  app_target.build_configurations.each do |build_config|
+    next unless build_config.name == 'Release'
+
+    build_config.build_settings['DEBUG_INFORMATION_FORMAT'] = 'dwarf-with-dsym'
+  end
+
+  phase_name = '[RN] Generate dSYMs for prebuilt frameworks'
+  phase = app_target.shell_script_build_phases.find { |build_phase| build_phase.name == phase_name }
+  phase ||= app_target.new_shell_script_build_phase(phase_name)
+  phase.shell_script = prebuilt_dsym_script
+  phase.show_env_vars_in_log = '0'
+  phase.input_paths = [
+    '${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/React.framework/React',
+    '${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/ReactNativeDependencies.framework/ReactNativeDependencies',
+    '${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/hermesvm.framework/hermesvm'
+  ]
+  phase.output_paths = [
+    '${DWARF_DSYM_FOLDER_PATH}/React.framework.dSYM',
+    '${DWARF_DSYM_FOLDER_PATH}/ReactNativeDependencies.framework.dSYM',
+    '${DWARF_DSYM_FOLDER_PATH}/hermesvm.framework.dSYM'
+  ]
+
+  app_target.build_phases.delete(phase)
+  app_target.build_phases << phase
+  app_project.save
+end
+
 target 'Firefly' do
   config = use_native_modules!
 
@@ -31,4 +90,8 @@ target 'Firefly' do
       # :ccache_enabled => true
     )
   end
+end
+
+post_integrate do |_installer|
+  configure_prebuilt_framework_dsym_phase
 end
